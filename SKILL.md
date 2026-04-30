@@ -33,7 +33,7 @@ If you are reading this skill from a SQL-warehouse-backed surface, stop and reop
 
 ## MANDATORY — Read before every task
 
-These three rules guide what the agent does during generation; they do not enforce correctness. The agent is drafting a config for a human reviewer to ratify. Each rule increases the chance the draft is structurally sound and the semantic choices are visible — a clinical informaticist or OMOP-experienced engineer still reviews before the config joins the DAG.
+These three rules guide what the agent does during generation; they do not enforce correctness. The agent is drafting a config for a human reviewer to ratify. Each rule increases the chance the draft is structurally sound and the OMOP fidelity choices are visible — a clinical informaticist or OMOP-experienced engineer still reviews before the config joins the DAG.
 
 1. **Follow the Canonical YAML example in this skill before generating.** Read the [Canonical YAML example](#canonical-yaml-example) section below. Every generated config must match that structure exactly — `vocabulary_lookups` with `resolution` + `source_alias` + `fallback`, `expectations` as `{name, expr}` objects, `{catalog}.{bronze_schema}` placeholders in sources.
 
@@ -205,18 +205,18 @@ Draft ready for review: {table_name} — schema validates, 0 Pydantic errors
   {n_columns} columns mapped | {n_lookups} vocabulary lookups | {n_expectations} expectations
   Resolution: {brief strategy summary, e.g. "1x concept_table_mapped (ICD10CM→SNOMED), 1x concept_table"}
 
-The validator confirmed the YAML structure. It cannot confirm the semantic choices — those need your eyes before this config joins the DAG.
+The validator confirmed the YAML structure. It cannot confirm OMOP fidelity — the clinical and source-data choices need your eyes before this config joins the DAG.
 
 What's next — pick one, or ask me anything:
 
-  1. Review checklist (the semantic choices to verify before deploying)
+  1. Review checklist (the OMOP fidelity choices to verify before deploying)
   2. Walk me through deploying (assumes review is done — explains deploy, pipeline run, post-build validation)
   3. Deploy commands only (assumes review is done — three commands, no explanation)
 ```
 
 **How to respond to each option:**
 
-**If user picks 1 (review checklist):** Walk through the semantic choices the validator can't check. For each item, name what was generated and what the reviewer should confirm. Cover all that apply to this config:
+**If user picks 1 (review checklist):** Walk through the OMOP fidelity choices the validator can't check. For each item, name what was generated and what the reviewer should confirm. Cover all that apply to this config:
 
 - **Vocabulary resolution strategies** — for each `vocabulary_lookups` entry, state the strategy chosen and why. Examples: "DiagnosisCode uses `concept_table_mapped` because ICD-10 is non-standard in OMOP and needs the Maps-to crosswalk to SNOMED. Confirm your bronze ICD-10 codes don't include Z-codes that should land in `observation_period` or `observation` — `domain_id: Condition` will silently drop those." Or: "RaceCode uses `source_to_concept_map` because institution-specific race codes don't exist in OHDSI Athena. Confirm the seed CSV covers every distinct race value in your bronze — anything missing resolves to 0 silently."
 - **CASE expression branches** — for any column with a CASE expression, list the branches generated and the `ELSE` fallback. Example: "GenderCode CASE assumes `'M' → 8507`, `'F' → 8532`, ELSE 0. Confirm your bronze actually uses 'M'/'F' and not 'Male'/'Female' — every unmatched value falls through to 0 silently."
@@ -307,7 +307,7 @@ The script reports pass/fail for five layers (schema, primary-key uniqueness, co
 
 ### Step 7 — Wire the table into the OMOP job DAG
 
-Once the pipeline runs green, `validate_omop.py` passes 5/5 layers, and a reviewer (data engineer + clinical informaticist or OMOP-experienced peer) has accepted the materialized table, add it as a task in `resources/jobs.yml` so it runs as part of the orchestrated `omop_full_build` job. The 5/5 validator confirms the table is structurally well-formed; reviewer acceptance confirms the semantic choices were right.
+Once the pipeline runs green, `validate_omop.py` passes 5/5 layers, and a reviewer (data engineer + clinical informaticist or OMOP-experienced peer) has accepted the materialized table, add it as a task in `resources/jobs.yml` so it runs as part of the orchestrated `omop_full_build` job. The 5/5 validator confirms the table is structurally well-formed; reviewer acceptance confirms OMOP fidelity — the clinical and source-data choices were right.
 
 The OMOP-specific rules (`full_refresh: true` mandatory, explicit `depends_on`, `bundle validate` gate) and step-by-step workflow live in [`references/dag_wiring.md`](references/dag_wiring.md). The dependency chart for build order lives in [`references/omop_dag_dependencies.md`](references/omop_dag_dependencies.md).
 
