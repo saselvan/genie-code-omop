@@ -33,7 +33,7 @@ If you are reading this skill from a SQL-warehouse-backed surface, stop and reop
 
 ## MANDATORY — Read before every task
 
-You MUST follow these three rules on every config generation. Do not skip any of them.
+These three rules guide what the agent does during generation; they do not enforce correctness. The agent is drafting a config for a human reviewer to ratify. Each rule increases the chance the draft is structurally sound and the semantic choices are visible — a clinical informaticist or OMOP-experienced engineer still reviews before the config joins the DAG.
 
 1. **Follow the Canonical YAML example in this skill before generating.** Read the [Canonical YAML example](#canonical-yaml-example) section below. Every generated config must match that structure exactly — `vocabulary_lookups` with `resolution` + `source_alias` + `fallback`, `expectations` as `{name, expr}` objects, `{catalog}.{bronze_schema}` placeholders in sources.
 
@@ -200,25 +200,35 @@ Exit code 0 = valid; exit code 1 = invalid (errors printed to stderr).
 **Only after validation passes:** present the config. The following is an example completion format — adapt to the surface (notebook, IDE, chat):
 
 ```
-Config validated: {table_name} — 0 errors
+Draft ready for review: {table_name} — schema validates, 0 Pydantic errors
 
   {n_columns} columns mapped | {n_lookups} vocabulary lookups | {n_expectations} expectations
   Resolution: {brief strategy summary, e.g. "1x concept_table_mapped (ICD10CM→SNOMED), 1x concept_table"}
 
+The validator confirmed the YAML structure. It cannot confirm the semantic choices — those need your eyes before this config joins the DAG.
+
 What's next — pick one, or ask me anything:
 
-  1. Walk me through deploying this (explains deploy, pipeline run, and validation step by step)
-  2. Review vocabulary choices (why each resolution strategy was picked)
-  3. Deploy and run (just the commands — deploy, run pipeline, validate output)
+  1. Review checklist (the semantic choices to verify before deploying)
+  2. Walk me through deploying (assumes review is done — explains deploy, pipeline run, post-build validation)
+  3. Deploy commands only (assumes review is done — three commands, no explanation)
 ```
 
 **How to respond to each option:**
 
-**If user picks 1 (walk me through):** Give one step at a time with brief explanations. Start with: "Save this YAML to `configs/{table_name}.yaml` in your repo. Then run `CATALOG=your_catalog ./deploy.sh production` — this syncs the config to the UC Volume where the pipeline reads it." After the user confirms, give the pipeline run command. Then the validation step. Link to `docs/omop-runbook.md` Section 7 for reference.
+**If user picks 1 (review checklist):** Walk through the semantic choices the validator can't check. For each item, name what was generated and what the reviewer should confirm. Cover all that apply to this config:
 
-**If user picks 2 (review vocab choices):** For each vocabulary lookup, explain in one sentence why that resolution strategy was chosen. Example: "The diagnosis-code column uses concept_table_mapped because ICD-10 codes are non-standard in OMOP — they need the Maps to crosswalk to get standard SNOMED concept_ids. Race uses source_to_concept_map because your race codes are institution-specific and don't exist in OHDSI Athena."
+- **Vocabulary resolution strategies** — for each `vocabulary_lookups` entry, state the strategy chosen and why. Examples: "DiagnosisCode uses `concept_table_mapped` because ICD-10 is non-standard in OMOP and needs the Maps-to crosswalk to SNOMED. Confirm your bronze ICD-10 codes don't include Z-codes that should land in `observation_period` or `observation` — `domain_id: Condition` will silently drop those." Or: "RaceCode uses `source_to_concept_map` because institution-specific race codes don't exist in OHDSI Athena. Confirm the seed CSV covers every distinct race value in your bronze — anything missing resolves to 0 silently."
+- **CASE expression branches** — for any column with a CASE expression, list the branches generated and the `ELSE` fallback. Example: "GenderCode CASE assumes `'M' → 8507`, `'F' → 8532`, ELSE 0. Confirm your bronze actually uses 'M'/'F' and not 'Male'/'Female' — every unmatched value falls through to 0 silently."
+- **Type concept choices** — name any `*_type_concept_id` literal and what it means. Example: "`condition_type_concept_id = 32817` ('EHR encounter record'). Confirm that's the right provenance — `38000245` ('EHR encounter diagnosis') is more specific if your source is encounter-derived diagnoses."
+- **Join cardinality** — name the join type (LEFT/INNER) and what could go wrong. Example: "Joining `pat_enc_dx` LEFT to `pat_enc` to pull encounter dates. If a diagnosis row has no matching encounter, the date columns fall back to the diagnosis-row defaults — confirm that's what you want."
+- **STCM coverage** — if any column maps via `source_to_concept_map`, name the seed CSV the reviewer needs to populate, and warn that distinct source codes not in the seed will resolve to `fallback: 0` silently. Recommend running `generate_source_mappings.py` against the actual bronze to surface unresolved codes.
 
-**If user picks 3 (just commands):** Emit three commands, no explanation:
+End with: "When you've reviewed and accepted these, pick option 2 or 3 to deploy."
+
+**If user picks 2 (walk through deploying):** Assume review is done. Give one step at a time with brief explanations. Start with: "Save this YAML to `configs/{table_name}.yaml` in your repo. Then run `CATALOG=your_catalog ./deploy.sh production` — this syncs the config to the UC Volume where the pipeline reads it." After the user confirms, give the pipeline run command. Then the post-build validation step (`validate_omop.py` against the materialized table). Link to `docs/omop-runbook.md` Section 7 for reference.
+
+**If user picks 3 (deploy commands only):** Assume review is done. Emit three commands, no explanation:
 ```
 CATALOG=your_catalog ./deploy.sh production
 databricks bundle run omop_full_build -t production
@@ -297,7 +307,9 @@ The script reports pass/fail for five layers (schema, primary-key uniqueness, co
 
 ### Step 7 — Wire the table into the OMOP job DAG
 
-Once the pipeline runs green and `validate_omop.py` passes 5/5 layers, add the table to `resources/jobs.yml`. The OMOP-specific rules (`full_refresh: true` mandatory, explicit `depends_on`, `bundle validate` gate) and step-by-step workflow live in [`references/dag_wiring.md`](references/dag_wiring.md). The dependency chart for build order lives in [`references/omop_dag_dependencies.md`](references/omop_dag_dependencies.md).
+Once the pipeline runs green, `validate_omop.py` passes 5/5 layers, and a reviewer (data engineer + clinical informaticist or OMOP-experienced peer) has accepted the materialized table, add it as a task in `resources/jobs.yml` so it runs as part of the orchestrated `omop_full_build` job. The 5/5 validator confirms the table is structurally well-formed; reviewer acceptance confirms the semantic choices were right.
+
+The OMOP-specific rules (`full_refresh: true` mandatory, explicit `depends_on`, `bundle validate` gate) and step-by-step workflow live in [`references/dag_wiring.md`](references/dag_wiring.md). The dependency chart for build order lives in [`references/omop_dag_dependencies.md`](references/omop_dag_dependencies.md).
 
 ## Canonical YAML example
 
