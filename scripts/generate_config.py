@@ -10,6 +10,16 @@ and the canonical condition_occurrence example. Structural patterns
 (resolution strategies, two-lookup rule, hash keys, domain_id) come from
 the skill, not from this script.
 
+Two invocation modes:
+  - Default (explicit): --bronze-table FQN + --catalog + --bronze-schema.
+    Use this when you don't have a discovery.yaml yet — i.e., the cold
+    start path that every first-time user takes. No setup file required.
+  - Fast path (lookup): --discovery-file <path> + --omop-table.
+    Use this only when an up-to-date discovery.yaml already exists from
+    a prior session. discovery.yaml is an OPTIONAL artifact the agent
+    writes with user consent at the end of SKILL.md Step 4 — never a
+    precondition to using the skill.
+
 Auth is handled by Databricks runtime when invoked from Genie Code Agent.
 --profile only applies for local development against ~/.databrickscfg.
 """

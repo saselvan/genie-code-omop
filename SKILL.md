@@ -53,13 +53,26 @@ Pair with the **snake-case-column-renamer** skill when bronze still uses PascalC
 
 ## Step-by-step workflow
 
-### Step 0 — Discover source schema (run once per workspace)
+### Step 0 — Discover source schema
 
-Before generating any configs, agree on the workspace-level build context: catalog, bronze schema, reference schema, and which bronze table each OMOP target reads from. There are two ways the agent can pick this up:
+There is **no setup file to drop before using this skill**. Installing the skill is the only setup. The agent discovers the build context lazily — asks once, verifies against UC, and (optionally) persists what it learned at the end of Step 4 so the next session is a fast path.
 
-**Recommended (convention) — `discovery.yaml` lookup mode:**
+**Cold-start workflow (first session, no `discovery.yaml` exists yet):**
 
-Drop a `discovery.yaml` file in the user workspace at `/Workspace/Users/<your_user>/discovery.yaml` (or another agreed path). Template lives at [`templates/discovery.yaml`](templates/discovery.yaml). The agent reads it once and uses it for every config it generates — `--catalog`, `--bronze-schema`, and `--bronze-table` are all resolved from the file given an OMOP target name.
+1. Ask the user once: "What catalog and bronze schema are we working in?"
+2. Confirm the schema actually exists:
+
+   ```sql
+   SHOW SCHEMAS IN <catalog>;
+   SHOW TABLES IN <catalog>.<bronze_schema>;
+   ```
+
+3. Ask the user which bronze table maps to the OMOP target you're building (offer a guess from the `SHOW TABLES` output if it's obvious — e.g., `patient` for OMOP `person`, but always confirm).
+4. Proceed to Step 1.
+
+**Fast-path workflow (`discovery.yaml` exists in the user workspace):**
+
+If `/Workspace/Users/<your_user>/discovery.yaml` already exists from a prior session, the agent should still **verify against UC** before using it — schemas and tables drift, and a stale `discovery.yaml` is worse than no `discovery.yaml`. If a referenced schema or table no longer exists, treat it as a cold start and re-ask the user. The standalone shape:
 
 ```yaml
 catalog: <your_catalog>
@@ -71,22 +84,7 @@ table_mappings:
   condition_occurrence: <your_encounter_diagnosis_table>
 ```
 
-A worked example for this repo's synthetic demo data is in [`templates/discovery.example.yaml`](templates/discovery.example.yaml) — non-normative, your bronze names will differ.
-
-**Fallback (explicit mode):**
-
-If no `discovery.yaml` is present, prompt the user once for catalog, bronze schema, and the bronze table for the OMOP target you're building. Pass them as explicit `--catalog`, `--bronze-schema`, `--bronze-table` flags to `scripts/generate_config.py`.
-
-**Verify against UC:**
-
-Either way, before generating, confirm the bronze tables actually exist:
-
-```sql
-SHOW TABLES IN {catalog}.{bronze_schema};
-DESCRIBE TABLE {catalog}.{bronze_schema}.<your_patient_table>;
-```
-
-`discovery.yaml` carries only what isn't in `DESCRIBE TABLE` (table-to-table mappings + environment). Column-level mappings belong in each per-table config's `column_mappings` block — they're checked against bronze every run, so they can't drift the way a separate equivalents file would.
+This file is an **artifact the agent writes at the end of Step 4 with user consent** (see Step 4's "Persist context" sub-step). It's never a precondition. Users do not edit it manually unless they want to.
 
 **Build order (OMOP DAG, see [`references/omop_dag_dependencies.md`](references/omop_dag_dependencies.md)):**
 
@@ -98,11 +96,9 @@ Round 4: `condition_era`, `drug_era` (depend on Round 3)
 Build in dependency order — the validator's L3 referential integrity layer needs upstream tables to exist.
 
 **Key output from Step 0:**
-- A list of actual bronze table names that map to OMOP targets (e.g., your encounters table, your diagnoses table)
-- The actual column names for join keys (the patient identifier, the encounter identifier)
-- The actual column names for coded fields (diagnosis codes, procedure codes, medication codes)
-
-Save this mapping — you'll reference it in every subsequent step. The Genie Code agent can also discover this automatically by running DESCRIBE TABLE when generating configs.
+- The actual catalog and bronze schema (verified against UC)
+- The actual bronze table for the OMOP target you're about to build
+- Pass these forward as explicit `--catalog`, `--bronze-schema`, `--bronze-table` to Step 3, OR (fast-path) via `--discovery-file` if an up-to-date `discovery.yaml` exists.
 
 ### Step 1 — Confirm the target OMOP table
 
@@ -116,20 +112,9 @@ Run `DESCRIBE TABLE` (or `information_schema.columns`) on the bronze table(s). N
 
 **Before generating, read `configs/_schema.yaml` for the required YAML structure, then read `configs/person.yaml` as a working example of overall file shape.** All generated configs MUST follow the same structural shape — especially `vocabulary_lookups` (requires `resolution`, `source_alias`, `fallback`) and `expectations` (requires `{name, expr}` objects). For **fact tables** (`condition_occurrence`, `procedure_occurrence`, `drug_exposure`), the structural rules — two-lookup pattern, `domain_id` on both lookups, hash-with-resolved-concept-id surrogate keys — are demonstrated by the [Canonical YAML example](#canonical-yaml-example) below. `configs/person.yaml` is the file-shape template; the inline canonical is the fact-table-rules template. They are not competing canonical poles.
 
-The generator supports two invocation modes. Pick whichever matches your Step 0 setup.
+The generator supports two invocation modes. Use **explicit mode** by default — it requires no setup and is what cold-start sessions use. Use **lookup mode** as an opportunistic fast path if an up-to-date `discovery.yaml` already exists from a prior session (and remember: always verify against UC before trusting it).
 
-**Lookup mode (recommended, with discovery.yaml):**
-
-```bash
-python scripts/generate_config.py \
-  --discovery-file /Workspace/Users/<your_user>/discovery.yaml \
-  --omop-table person \
-  --output ./configs/person.yaml
-```
-
-`--catalog`, `--bronze-schema`, and the bronze table FQN are all resolved from `discovery.yaml` based on `--omop-table`. Caller pays the cost once (writing `discovery.yaml`); every subsequent OMOP table is a one-flag invocation.
-
-**Explicit mode (no discovery.yaml):**
+**Explicit mode (default — no setup file required):**
 
 ```bash
 python scripts/generate_config.py \
@@ -139,6 +124,17 @@ python scripts/generate_config.py \
   --bronze-schema <your_bronze_schema> \
   --output ./configs/person.yaml
 ```
+
+**Lookup mode (fast path — only if `discovery.yaml` exists and is fresh):**
+
+```bash
+python scripts/generate_config.py \
+  --discovery-file /Workspace/Users/<your_user>/discovery.yaml \
+  --omop-table person \
+  --output ./configs/person.yaml
+```
+
+`--catalog`, `--bronze-schema`, and the bronze table FQN are resolved from `discovery.yaml` by `--omop-table`. The agent should still confirm the resolved values against `SHOW SCHEMAS` / `SHOW TABLES` before invoking — a stale `discovery.yaml` will silently send the script at the wrong table.
 
 Requirements: `databricks-sdk`, `pyyaml`. SQL warehouse ID auto-discovers (first running serverless warehouse) — override with `--warehouse-id` or `DATABRICKS_WAREHOUSE_ID`. The script writes a pure pass-through YAML stub matching the shared config schema (see `configs/_schema.yaml`): one `column_mappings` entry per bronze column with `target: snake_case(col), expr: "src.<Col>"`. The agent then rewrites most of `column_mappings` based on the OMOP target columns, the resolution decision tree (MANDATORY rule 3), and the canonical `condition_occurrence` example below. The generator is honest about not knowing your domain semantics — it doesn't pretend.
 
@@ -212,6 +208,43 @@ databricks bundle run omop_full_build -t production
 # After pipeline completes: open src/99_validate_omop_output.py, set table={table_name}, Run All
 ```
 If the pipeline resource and job task don't exist yet for this table, say so and offer: "Ask me to wire {table_name} into the DAG — I'll generate the pipeline resource and job task YAML."
+
+#### Persist context (offer once per session)
+
+After validation passes, if `/Workspace/Users/<your_user>/discovery.yaml` does NOT already exist, offer:
+
+> "I learned your catalog (`<catalog>`), bronze schema (`<bronze_schema>`), and that OMOP `<table_name>` reads from `<bronze_table>`. Want me to save these to `discovery.yaml` so I don't have to ask next time?"
+
+If yes, write a YAML file to the user workspace path with the discovered values:
+
+```python
+import yaml
+discovery = {
+    "catalog": "<catalog>",
+    "bronze_schema": "<bronze_schema>",
+    "ref_schema": "reference",
+    "table_mappings": {"<table_name>": "<bronze_table>"},
+}
+path = "/Workspace/Users/<your_user>/discovery.yaml"
+with open(path, "w") as f:
+    yaml.safe_dump(discovery, f, default_flow_style=False, sort_keys=False)
+print(f"Saved: {path}")
+```
+
+If the file ALREADY exists (because you read it in fast-path mode at the start of this session), append the new table mapping instead of overwriting:
+
+```python
+import yaml
+path = "/Workspace/Users/<your_user>/discovery.yaml"
+with open(path) as f:
+    doc = yaml.safe_load(f) or {}
+doc.setdefault("table_mappings", {})["<table_name>"] = "<bronze_table>"
+with open(path, "w") as f:
+    yaml.safe_dump(doc, f, default_flow_style=False, sort_keys=False)
+print(f"Updated: {path}")
+```
+
+The offer is a courtesy, not a requirement — if the user declines, never ask again in the same session. If the user accepts and you've already added the OMOP→bronze mapping for the table you just generated, you do NOT need to re-ask on the next OMOP target in the same session — read the file, append the new mapping, save.
 
 ### Step 5 — Run the pipeline (dual mechanism)
 
@@ -383,7 +416,7 @@ If any fixtures fail after your change, the change broke the skill's contract. F
 - [`references/ehr_to_omop_mappings.md`](references/ehr_to_omop_mappings.md) — bronze → OMOP table and column mapping notes
 - [`references/vocabulary_domains.md`](references/vocabulary_domains.md) — domain ↔ vocabulary patterns and join strategies
 - [`references/omop_dag_dependencies.md`](references/omop_dag_dependencies.md) — Round 1–4 dependency chart for `resources/jobs.yml`
-- [`templates/discovery.yaml`](templates/discovery.yaml) — workspace-context template for Step 0 lookup mode
+- [`templates/discovery.yaml`](templates/discovery.yaml) — file-shape reference for the optional `discovery.yaml` artifact (NOT a setup precondition)
 - [`scripts/generate_config.py`](scripts/generate_config.py) — bronze `DESCRIBE` → pure pass-through YAML stub
 - [`scripts/generate_source_mappings.py`](scripts/generate_source_mappings.py) — distinct codes → `source_to_concept_map` CSV
 - [`scripts/validate_yaml_schema.py`](scripts/validate_yaml_schema.py) — standalone Pydantic config validator (CLI + `validate(path)`)
