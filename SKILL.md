@@ -19,7 +19,7 @@ You MUST follow these three rules on every config generation. Do not skip any of
 
 1. **Follow the Canonical YAML example in this skill before generating.** Read the [Canonical YAML example](#canonical-yaml-example) section below. Every generated config must match that structure exactly — `vocabulary_lookups` with `resolution` + `source_alias` + `fallback`, `expectations` as `{name, expr}` objects, `{catalog}.{bronze_schema}` placeholders in sources.
 
-2. **Validate before presenting.** After writing the YAML, run `config_loader.load_config("path/to/your.yaml")` and confirm 0 Pydantic errors. If errors exist, fix and re-validate. Do NOT present the config or any summary to the user until validation passes with 0 errors.
+2. **Validate before presenting.** After writing the YAML, run `scripts/validate_yaml_schema.validate("/Workspace/Users/<your_user>/configs/your.yaml")` and confirm 0 Pydantic errors. See [Step 4](#step-4--review-edit-and-validate-yaml) for the full workflow (CLI form is the always-safe fallback). If errors exist, fix and re-validate. Do NOT present the config or any summary to the user until validation passes with 0 errors.
 
 3. **Choose the right resolution strategy — ALWAYS query the reference schema, even if an existing config exists.** An existing config may use an outdated resolution strategy. Do NOT copy resolution strategies from old configs without verifying them. Query the reference schema EVERY TIME: `SELECT COUNT(*) FROM {catalog}.{ref_schema}.concept WHERE vocabulary_id = '<vocab>' AND concept_code = '<sample_code>'`. Then apply this decision tree:
    - **Local/institution-specific codes** (race, ethnicity, visit type) that do NOT exist in the reference schema → `resolution: source_to_concept_map`
@@ -246,108 +246,15 @@ The script reports pass/fail for five layers (schema, primary-key uniqueness, co
 
 ### Step 7 — Wire the table into the OMOP job DAG
 
-Once the pipeline runs green and `validate_omop.py` passes 5/5 layers, add the table as a task in `resources/jobs.yml` so it runs as part of the orchestrated `omop_full_build` job.
-
-**Read the OMOP dependency chart first:** [`references/omop_dag_dependencies.md`](references/omop_dag_dependencies.md). Find your table's round, list every predecessor it depends on (including transitive ones — explicit deps are self-documenting).
-
-**Read the canonical DAG:** [`resources/jobs.yml`](../../../resources/jobs.yml). Each placeholder task already shows the exact YAML shape you need.
-
-**Edit `resources/jobs.yml`:** uncomment the placeholder for your table (or add a new task block in the right Round section). The required shape:
-
-```yaml
-- task_key: condition_occurrence
-  depends_on:
-    - task_key: person
-    - task_key: visit_occurrence
-  pipeline_task:
-    pipeline_id: ${resources.pipelines.omop_condition_occurrence.id}
-    full_refresh: true
-```
-
-**MANDATORY rules:**
-
-1. **`full_refresh: true` on every OMOP task.** OMOP rebuilds are batch snapshots — incremental refresh would silently double-count rows when the source is re-landed. The hand-written DAG sets this on every active and placeholder task.
-2. **Explicit `depends_on` for every upstream table the pipeline reads.** List both `person` AND `visit_occurrence` for Round 3 facts even though `person` is transitive via `visit_occurrence`. Zero cost, big readability win.
-3. **`pipeline_id: ${resources.pipelines.omop_<table>.id}`.** This is a DAB resource reference — the pipeline must already exist in `resources/pipeline_generic.yml`. If it doesn't, add it before editing `jobs.yml`.
-4. **Validate before deploying.** Run `databricks bundle validate -t <target>` after editing — this catches typos in `pipeline_id`, malformed `depends_on` lists, and YAML syntax errors. Do NOT run `databricks bundle deploy` until validation is clean.
-
-```bash
-databricks bundle validate -t prod
-```
-
-If validation fails, fix the error (usually a missing pipeline resource or a typo in a task_key reference) and re-run. Only then deploy.
+Once the pipeline runs green and `validate_omop.py` passes 5/5 layers, add the table to `resources/jobs.yml`. The OMOP-specific rules (`full_refresh: true` mandatory, explicit `depends_on`, `bundle validate` gate) and step-by-step workflow live in [`references/dag_wiring.md`](references/dag_wiring.md). The dependency chart for build order lives in [`references/omop_dag_dependencies.md`](references/omop_dag_dependencies.md).
 
 ## Canonical YAML example
 
-This is the exact shape that the pipeline and Pydantic schema expect. Use this as the template when generating or editing configs:
+This is the inline canonical example — the fact-table shape (`condition_occurrence`) that demonstrates the highest-failure structural rules: two-lookup pattern (standard + source concept), `domain_id` requirement on both, hash-based surrogate keys with the resolved `*_concept_id` in the hash. Match this shape exactly when generating fact-table configs (`condition_occurrence`, `procedure_occurrence`, `drug_exposure`).
 
-```yaml
-# Source column names are illustrative — substitute the columns from your bronze table.
-# The structural patterns (resolution strategies, two-lookup rule, hash keys, domain_id) apply regardless.
-table_name: person
-target_schema: core_omop
-description: "OMOP CDM v5.4 Person from a patient table joined to a patient_identifier table."
+For `person` (dimension-table shape) and `measurement` (specialized "Maps to + Maps to unit" pattern), see [`references/canonical_examples.md`](references/canonical_examples.md). Read order: simplest (`person`) → canonical fact table (this section) → specialized (`measurement`).
 
-sources:
-  - alias: pat
-    table: "{catalog}.{bronze_schema}.<your_patient_table>"
-  - alias: id
-    table: "{catalog}.{bronze_schema}.<your_patient_identifier_table>"
-
-joins:
-  - left: pat
-    right: id
-    type: left
-    condition: "pat.patient_id = id.patient_id"
-
-vocabulary_lookups:
-  - source_alias: pat
-    source_column: race_code
-    target_column: race_concept_id
-    resolution: source_to_concept_map
-    source_vocabulary_id: Race
-    fallback: 0
-  - source_alias: pat
-    source_column: ethnicity_code
-    target_column: ethnicity_concept_id
-    resolution: source_to_concept_map
-    source_vocabulary_id: Ethnicity
-    fallback: 0
-
-column_mappings:
-  - target: person_id
-    expr: "CAST(pat.patient_id AS BIGINT)"
-  - target: gender_concept_id
-    expr: "CASE WHEN pat.gender_code = 'M' THEN 8507 WHEN pat.gender_code = 'F' THEN 8532 ELSE 0 END"
-  - target: year_of_birth
-    expr: "YEAR(pat.birth_date)"
-  - target: person_source_value
-    expr: "CAST(id.mrn AS STRING)"
-
-expectations:
-  fail:
-    - name: valid_person_id
-      expr: "person_id IS NOT NULL"
-  drop:
-    - name: valid_gender
-      expr: "gender_concept_id IN (8507, 8532, 0)"
-  warn:
-    - name: known_race_concept
-      expr: "race_concept_id != 0"
-```
-
-**Key rules:**
-- `vocabulary_lookups[].resolution` must be `source_to_concept_map`, `concept_table`, or `concept_table_mapped`
-- `vocabulary_lookups[].source_alias` is **required** — must match an alias from `sources`
-- `vocabulary_lookups[].domain_id` is **required** for `concept_table` AND `concept_table_mapped` — always include it
-- `expectations.*[]` items are **objects** with `name` (stable ID for SDP telemetry) and `expr` (SQL boolean) — not plain strings
-- `sources[].table` uses `{catalog}` and `{bronze_schema}` placeholders — never hardcode catalog names
-
-Resolution order: `vocabulary_lookups` are evaluated before `column_mappings`, so `column_mappings` expressions may reference resolved `*_concept_id` columns by name (e.g., using `condition_concept_id` inside a surrogate key hash).
-
-## Canonical YAML example — fact table (concept_table_mapped)
-
-Use this template for clinical fact tables (condition, procedure, drug) where source codes need crosswalk to standard concepts. **Every fact table needs TWO vocabulary lookups per coded column** — one for the standard concept, one for the source concept:
+**Every fact table needs TWO vocabulary lookups per coded column** — one for the standard concept, one for the source concept:
 
 ```yaml
 # Source column names are illustrative — substitute the columns from your bronze table.
@@ -417,113 +324,22 @@ expectations:
 - `domain_id` is required on both lookups — filters one-to-many fan-out to the correct domain and satisfies Pydantic validation
 - Surrogate key includes `condition_concept_id` in the hash for one-to-many fan-out safety
 - `vocabulary_lookups` are evaluated before `column_mappings`, so the surrogate-key expression can reference `condition_concept_id` by name
-
-## Canonical YAML example — measurement (Maps to + Maps to unit)
-
-Use this template for measurement tables where the source vocabulary (e.g. LOINC) needs both a standard concept crosswalk and a unit concept crosswalk:
-
-```yaml
-# Source column names are illustrative — substitute the columns from your bronze table.
-# The structural patterns (resolution strategies, two-lookup rule, hash keys, domain_id) apply regardless.
-table_name: measurement
-target_schema: core_omop
-description: "OMOP CDM v5.4 measurement from a clinical-measurement-shaped table."
-
-sources:
-  - alias: fs
-    table: "{catalog}.{bronze_schema}.<your_clinical_measurement_table>"
-  - alias: enc
-    table: "{catalog}.{bronze_schema}.<your_encounter_table>"
-
-joins:
-  - left: fs
-    right: enc
-    type: left
-    condition: "fs.encounter_id = enc.encounter_id"
-
-vocabulary_lookups:
-  # Standard concept: LOINC → standard Measurement concept via Maps to crosswalk
-  - source_alias: fs
-    source_column: measurement_name
-    target_column: measurement_concept_id
-    resolution: concept_table_mapped
-    vocabulary_id: LOINC
-    domain_id: Measurement
-    fallback: 0
-  # Unit concept: LOINC → UCUM unit via Maps to unit crosswalk
-  - source_alias: fs
-    source_column: measurement_name
-    target_column: unit_concept_id
-    resolution: concept_table_mapped
-    vocabulary_id: LOINC
-    relationship_id: "Maps to unit"
-    domain_id: Unit
-    fallback: 0
-  # Source concept: LOINC concept directly (non-standard, for traceability)
-  - source_alias: fs
-    source_column: measurement_name
-    target_column: measurement_source_concept_id
-    resolution: concept_table
-    vocabulary_id: LOINC
-    domain_id: Measurement
-    standard_only: false
-    fallback: 0
-
-column_mappings:
-  - target: measurement_id
-    expr: "xxhash64(CONCAT_WS('|', CAST(fs.measurement_id AS STRING), CAST(measurement_concept_id AS STRING)))"
-  - target: person_id
-    expr: "CAST(enc.patient_id AS BIGINT)"
-  - target: measurement_date
-    expr: "DATE(fs.measurement_datetime)"
-  - target: measurement_datetime
-    expr: "fs.measurement_datetime"
-  - target: measurement_type_concept_id
-    expr: "32817"
-  - target: value_as_number
-    expr: "CAST(fs.measurement_value AS DOUBLE)"
-  - target: measurement_source_value
-    expr: "fs.measurement_name"
-
-expectations:
-  fail:
-    - name: valid_pk
-      expr: "measurement_id IS NOT NULL"
-    - name: valid_person
-      expr: "person_id IS NOT NULL"
-  warn:
-    - name: known_measurement
-      expr: "measurement_concept_id != 0"
-    - name: has_value
-      expr: "value_as_number IS NOT NULL"
-```
-
-**Why this shape:**
-- `concept_table_mapped` with default `relationship_id` ("Maps to") for the standard measurement concept
-- `concept_table_mapped` with `relationship_id: "Maps to unit"` for `unit_concept_id` (resolves LOINC to UCUM unit concepts)
-- `concept_table` with `standard_only: false` for `measurement_source_concept_id` (traceability)
-- `value_as_number` uses safe `CAST(... AS DOUBLE)` — source values may contain non-numeric strings that will produce NULL
-- xxhash64-based surrogate key includes `measurement_concept_id` for fan-out safety
+- `expectations.*[]` items are `{name, expr}` objects (not bare strings); `sources[].table` uses `{catalog}` and `{bronze_schema}` placeholders (never hardcoded catalog names)
 
 ## Edge cases and known limitations
 
-- **One-to-many vocabulary mappings (critical for `concept_table_mapped`).** One ICD-10 code can map to multiple SNOMED concepts. Per OHDSI convention, the ETL creates multiple output rows — one per target concept in the matching domain. This means one source diagnosis row may produce 2-4 `condition_occurrence` rows. **Surrogate key expressions must include the resolved concept_id in the hash** to produce unique keys across fan-out rows:
-  ```yaml
-  - target: condition_occurrence_id
-    expr: "xxhash64(CONCAT_WS('|', CAST(dx.encounter_id AS STRING), dx.diagnosis_code, CAST(condition_concept_id AS STRING)))"
-  ```
-  Cross-domain targets (e.g., Observation-domain targets from an ICD-10 code) are filtered out by `domain_id` and should be picked up when building the `observation` table.
-- **`*_source_concept_id` columns.** Use `resolution: concept_table` with `standard_only: false` to store the non-standard source concept. Use `resolution: concept_table_mapped` with `standard_only: true` (default) for the standard `*_concept_id` column. Both lookups use the same source column but produce different concept_ids.
-- **`relationship_id` for measurement.** The default “Maps to” works for condition/procedure/drug. For measurement, also consider `relationship_id: “Maps to unit”` (resolves LOINC → UCUM unit) and `relationship_id: “Maps to value”` (resolves LOINC → categorical value concepts).
-- **`visit_type_concept_id` is not visit kind.** In OMOP it records **provenance** (how the visit row was captured). For EHR source/EHR encounter rows, use concept **32817** (“EHR”). Clinical visit type belongs in `visit_concept_id`.
-- **Vocabulary lookups for non-trivial codes:** codes that do not exist as `concept_code` in the right `vocabulary_id` need `source_to_concept_map`, cross-vocabulary relationships (`Maps to`), or manual OHDSI workflow—not a bare string match on `concept` alone.
-- **`generate_config.py` heuristics** are guesses from column names; joins, vocab, and expectations always need human review.
+The canonical example above documents the structural rules for `concept_table_mapped` (two-lookup pattern, `domain_id` requirement, hash-with-concept-id). This section covers cases the canonical doesn't show:
+
+- **One-to-many fan-out scope.** When `concept_table_mapped` produces multiple target concepts for one source code, cross-domain targets (e.g., Observation-domain targets from an ICD-10 code) are filtered out by `domain_id` and should be picked up when building the `observation` table.
+- **`relationship_id` overrides for measurement.** Default "Maps to" works for condition/procedure/drug. For measurement, also consider `relationship_id: "Maps to unit"` (resolves LOINC → UCUM unit) and `relationship_id: "Maps to value"` (resolves LOINC → categorical value concepts). See [`references/canonical_examples.md`](references/canonical_examples.md) for the measurement pattern.
+- **`visit_type_concept_id` is not visit kind.** In OMOP it records **provenance** (how the visit row was captured). For encounter rows from an EHR, use concept **32817** ("EHR"). Clinical visit type belongs in `visit_concept_id`.
+- **Vocabulary lookups for non-trivial codes:** codes that do not exist as `concept_code` in the right `vocabulary_id` need `source_to_concept_map`, cross-vocabulary relationships, or manual OHDSI workflow — not a bare string match on `concept` alone.
+- **`generate_config.py` is a pass-through scaffolder.** It emits `{target: snake_case(col), expr: "src.<Col>"}` for every bronze column. The agent rewrites column_mappings, joins, vocabulary_lookups, and expectations using the canonical example and resolution decision tree. The script does not guess domain semantics.
 - **`validate_omop.py` domain checks** cover common `*_concept_id` columns listed in the reference spec; exotic columns may need extending the spec or script.
 - **CPT4** is often missing until Athena CPT4 license steps complete; validation against procedure concepts may show gaps until vocab is complete.
-- **Statement execution** requires a running SQL warehouse; large `DISTINCT` scans in `generate_source_mappings.py` can be expensive on wide bronze tables—filter early if needed.
+- **SQL warehouse cost.** Large `DISTINCT` scans in `generate_source_mappings.py` can be expensive on wide bronze tables — filter early if needed. The standalone schema validator (`scripts/validate_yaml_schema.py`) does NOT need a warehouse — it's pure Pydantic, fast, runs anywhere.
 - **Pipeline parameters** must match how your SDP code reads `spark.conf` (for example `table_name`); mismatches cause the wrong flow or missing config path.
-- **Surrogate key stability under full_refresh.** OMOP rebuilds are batch snapshots. `ROW_NUMBER() OVER (ORDER BY ...)` produces unstable keys across runs because row ordering is non-deterministic when the source data changes (inserts, deletes, late-arriving records). Hash-based keys like `xxhash64(CONCAT_WS('|', ...))` are deterministic and idempotent — the same input always produces the same key regardless of rebuild timing. Additionally, `ROW_NUMBER` requires a single-reducer global sort, which does not scale on large fact tables. Prefer `xxhash64` for all OMOP surrogate keys.
-- **Fact tables need two vocabulary lookups.** Pydantic does not enforce that fact tables include both `*_concept_id` and `*_source_concept_id` lookups. The agent must include both. The standard lookup (`concept_table_mapped`) resolves to the OMOP standard concept; the source lookup (`concept_table` with `standard_only: false`) preserves the original non-standard concept for traceability. Only having the standard lookup loses traceability back to the source vocabulary.
+- **Surrogate key stability under full_refresh.** OMOP rebuilds are batch snapshots. `ROW_NUMBER() OVER (ORDER BY ...)` produces unstable keys across runs because row ordering is non-deterministic when source data changes. `xxhash64(CONCAT_WS('|', ...))` is deterministic and idempotent — same input, same key, regardless of rebuild timing. `ROW_NUMBER` also requires a single-reducer global sort that does not scale on large fact tables. **Always prefer `xxhash64`.**
 
 ## Healthcare / OMOP tokens
 
@@ -537,13 +353,6 @@ expectations:
 
 **Note:** OHDSI Athena uses `Type Concept` as the domain_id for provenance columns (`visit_type_concept_id`, `condition_type_concept_id`, etc.) — not `Visit Type` or `Condition Type`.
 
-## Extending the skill
-
-- **New OMOP tables:** add an abridged section to `references/omop_cdm_v54_spec.md` and extend the embedded spec in `scripts/validate_omop.py` if markdown parsing does not yet cover that table.
-- **New EHR sources:** document mappings in `references/ehr_to_omop_mappings.md` and add row patterns to `configs/_schema.yaml` and `seed_data/` if they are org-wide.
-- **New vocabulary or domains:** update `references/vocabulary_domains.md` and optionally add default `vocabulary_lookups` templates to `generate_config.py` heuristics.
-- **institution-specific tokens:** keep org conventions in repo-level `configs/_schema.yaml` and extend seed CSVs under `seed_data/`; regenerate configs with the scripts after changing bronze layout.
-
 ## Not for
 
 This skill does NOT handle:
@@ -554,25 +363,29 @@ This skill does NOT handle:
 
 If you need any of the above, this skill is the wrong tool.
 
-## Extending the skill — quality contract
+## Quality contract — read before modifying
 
-Before modifying SKILL.md, reference files, or scripts, read `tests/llm_regression/SKILL_INVENTORY.md` for the documented behavioral contract — which strategies are tested, which fixtures exist, and what the LLM is expected to produce. Then run the regression harness:
+Before modifying SKILL.md, reference files, or scripts, read `tests/llm_regression/SKILL_INVENTORY.md` for the documented behavioral contract — which strategies are tested, which fixtures exist, and what the LLM is expected to produce. Then run the regression harness AND the schema drift test:
 
 ```bash
 rm -rf tests/llm_regression/.harness_cache/
-pytest tests/llm_regression/test_run_fixtures.py -v
+pytest tests/llm_regression/test_run_fixtures.py tests/test_validate_yaml_schema.py -v
 ```
 
-If any fixtures fail after your change, the change broke the skill's contract. Fix the change, not the test.
+If any fixtures fail after your change, the change broke the skill's contract. Fix the change, not the test. The drift test (`tests/test_validate_yaml_schema.py`) specifically catches divergence between the embedded Pydantic schema in `scripts/validate_yaml_schema.py` and the host schema in `src/config_loader.py` — if you change one, you MUST update the other.
 
 ## References
 
+- [`references/canonical_examples.md`](references/canonical_examples.md) — `person` (dimension) and `measurement` (Maps to + Maps to unit) canonical YAML examples
+- [`references/dag_wiring.md`](references/dag_wiring.md) — Step 7 walkthrough for adding tasks to `resources/jobs.yml`
 - [`references/omop_cdm_v54_spec.md`](references/omop_cdm_v54_spec.md) — required columns, keys, FKs, concept domains (clinical scope)
-- [`references/ehr_to_omop_mappings.md`](references/ehr_to_omop_mappings.md) — EHR source → OMOP table and column mapping notes
+- [`references/ehr_to_omop_mappings.md`](references/ehr_to_omop_mappings.md) — bronze → OMOP table and column mapping notes
 - [`references/vocabulary_domains.md`](references/vocabulary_domains.md) — domain ↔ vocabulary patterns and join strategies
-- [`references/omop_dag_dependencies.md`](references/omop_dag_dependencies.md) — Round 1–4 dependency chart for `resources/jobs.yml` (Step 7)
-- [`scripts/generate_config.py`](scripts/generate_config.py) — bronze `DESCRIBE` → YAML stub
+- [`references/omop_dag_dependencies.md`](references/omop_dag_dependencies.md) — Round 1–4 dependency chart for `resources/jobs.yml`
+- [`templates/discovery.yaml`](templates/discovery.yaml) — workspace-context template for Step 0 lookup mode
+- [`scripts/generate_config.py`](scripts/generate_config.py) — bronze `DESCRIBE` → pure pass-through YAML stub
 - [`scripts/generate_source_mappings.py`](scripts/generate_source_mappings.py) — distinct codes → `source_to_concept_map` CSV
+- [`scripts/validate_yaml_schema.py`](scripts/validate_yaml_schema.py) — standalone Pydantic config validator (CLI + `validate(path)`)
 - [`scripts/validate_omop.py`](scripts/validate_omop.py) — five-layer UC table validation
 - [`scripts/run_pipeline.py`](scripts/run_pipeline.py) — start and poll pipeline updates
 
