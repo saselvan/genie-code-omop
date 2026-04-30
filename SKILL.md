@@ -77,7 +77,7 @@ Save this mapping — you'll reference it in every subsequent step. The Genie Co
 
 ### Step 1 — Confirm the target OMOP table
 
-Agree on the OMOP CDM v5.4 target (for example `person`, `visit_occurrence`, `condition_occurrence`). Confirm the Unity Catalog names: catalog (e.g. `samuels_fevm_catalog` for dev, `your_catalog` for your organization), `core_omop` for silver, `bronze_clinical` for bronze, `reference` for vocab. Use **three-part** names only: `{catalog}.{schema}.{table}`.
+Agree on the OMOP CDM v5.4 target (for example `person`, `visit_occurrence`, `condition_occurrence`). Confirm the Unity Catalog names: catalog (e.g. `your_catalog` for dev, `your_catalog` for your organization), `core_omop` for silver, `bronze_clinical` for bronze, `reference` for vocab. Use **three-part** names only: `{catalog}.{schema}.{table}`.
 
 ### Step 2 — Inspect the bronze source
 
@@ -93,7 +93,7 @@ Run the generator with the bronze table FQN, target OMOP table name, and optiona
 python scripts/generate_config.py \
   --bronze-table {catalog}.bronze_clinical.patient \
   --omop-table person \
-  --catalog samuels_fevm_catalog \
+  --catalog your_catalog \
   --bronze-schema bronze_clinical \
   --output ./configs/person.yaml
 ```
@@ -171,7 +171,7 @@ python scripts/run_pipeline.py \
   --pipeline-id "<uuid>" \
   --table person \
   --full-refresh \
-  --profile fe-vm-serverless-stable-udlnh4
+  --profile $DATABRICKS_CONFIG_PROFILE
 ```
 
 If you only know the pipeline name, use `--pipeline-name` (the script resolves the ID via `list_pipelines`). The script polls every 10 seconds for up to 30 minutes and prints update state and events.
@@ -446,14 +446,10 @@ expectations:
 
 ## Edge cases and known limitations
 
-- **One-to-many vocabulary mappings (critical for `concept_table_mapped`).** One ICD-10 code can map to multiple SNOMED concepts. Per OHDSI convention, the ETL creates multiple output rows — one per target concept in the matching domain. This means one source diagnosis row may produce 2-4 `condition_occurrence` rows. **Surrogate key expressions must account for this fan-out.** Use `condition_concept_id` in your key hash or ROW_NUMBER ordering:
+- **One-to-many vocabulary mappings (critical for `concept_table_mapped`).** One ICD-10 code can map to multiple SNOMED concepts. Per OHDSI convention, the ETL creates multiple output rows — one per target concept in the matching domain. This means one source diagnosis row may produce 2-4 `condition_occurrence` rows. **Surrogate key expressions must include the resolved concept_id in the hash** to produce unique keys across fan-out rows:
   ```yaml
-  # WRONG — produces duplicate keys on fan-out:
   - target: condition_occurrence_id
-    expr: “ROW_NUMBER() OVER (ORDER BY dx.EncounterID, dx.DiagnosisCode)”
-  # RIGHT — unique across fan-out rows:
-  - target: condition_occurrence_id
-    expr: “ROW_NUMBER() OVER (ORDER BY dx.EncounterID, dx.DiagnosisCode, condition_concept_id)”
+    expr: “xxhash64(CONCAT_WS('|', CAST(dx.EncounterID AS STRING), dx.DiagnosisCode, CAST(condition_concept_id AS STRING)))”
   ```
   Cross-domain targets (e.g., Observation-domain targets from an ICD-10 code) are filtered out by `domain_id` and should be picked up when building the `observation` table.
 - **`*_source_concept_id` columns.** Use `resolution: concept_table` with `standard_only: false` to store the non-standard source concept. Use `resolution: concept_table_mapped` with `standard_only: true` (default) for the standard `*_concept_id` column. Both lookups use the same source column but produce different concept_ids.
@@ -486,6 +482,27 @@ expectations:
 - **New EHR sources:** document mappings in `references/ehr_to_omop_mappings.md` and add row patterns to `configs/_schema.yaml` and `seed_data/` if they are org-wide.
 - **New vocabulary or domains:** update `references/vocabulary_domains.md` and optionally add default `vocabulary_lookups` templates to `generate_config.py` heuristics.
 - **institution-specific tokens:** keep org conventions in repo-level `configs/_schema.yaml` and extend seed CSVs under `seed_data/`; regenerate configs with the scripts after changing bronze layout.
+
+## Not for
+
+This skill does NOT handle:
+- **Phase 5+ tables** (note, note_nlp, specimen, episode, fact_relationship) — see `references/omop_dag_dependencies.md` for the out-of-scope list
+- **SCD2 / slowly changing dimensions** — use SDP's `create_auto_cdc_flow` directly (see the production path in the runbook)
+- **OHDSI Atlas / Achilles / White Rabbit** — separate OHDSI tools for cohort building, data quality dashboards, and source profiling
+- **Cross-network federated research** — OMOP network study participation requires infrastructure beyond this ETL framework
+
+If you need any of the above, this skill is the wrong tool.
+
+## Extending the skill — quality contract
+
+Before modifying SKILL.md, reference files, or scripts, read `tests/llm_regression/SKILL_INVENTORY.md` for the documented behavioral contract — which strategies are tested, which fixtures exist, and what the LLM is expected to produce. Then run the regression harness:
+
+```bash
+rm -rf tests/llm_regression/.harness_cache/
+pytest tests/llm_regression/test_run_fixtures.py -v
+```
+
+If any fixtures fail after your change, the change broke the skill's contract. Fix the change, not the test.
 
 ## References
 

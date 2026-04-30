@@ -69,7 +69,7 @@ def _norm_type(t: str) -> str:
 
 
 def parse_omop_spec_md(text: str) -> dict[str, list[ColSpec]]:
-    """Parse your organization reference markdown: ## table_name followed by a pipe table."""
+    """Parse the OMOP reference markdown: ## table_name followed by a pipe table."""
     sections = re.split(r"(?m)^##\s+(.+)\s*$", text)
     out: dict[str, list[ColSpec]] = {}
     if len(sections) < 3:

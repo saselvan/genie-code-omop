@@ -1,4 +1,4 @@
-# OMOP Common Data Model v5.4 — Tables in your organization scope
+# OMOP Common Data Model v5.4 — Tables covered by this skill
 
 This note is an **abridged** abridged summary of required shapes for validation and mapping. Canonical definitions, cardinality, and full optional column lists live in the OHDSI CDM documentation: [OMOP CDM v5.4](https://ohdsi.github.io/CommonDataModel/cdm54.html).
 

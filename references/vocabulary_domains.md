@@ -1,6 +1,6 @@
 # Vocabulary and domain cheat sheet (OMOP CDM v5.4)
 
-This reference summarizes how OMOP **domains**, **vocabularies**, and **`source_to_concept_map` (STCM)** fit together for common your organization joins. Canonical tables: `concept`, `vocabulary`, `domain`, `concept_relationship`, `concept_ancestor`, and optional STCM.
+This reference summarizes how OMOP **domains**, **vocabularies**, and **`source_to_concept_map` (STCM)** fit together for common vocabulary joins. Canonical tables: `concept`, `vocabulary`, `domain`, `concept_relationship`, `concept_ancestor`, and optional STCM.
 
 ## Domain → typical `vocabulary_id` values
 

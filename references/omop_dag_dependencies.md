@@ -42,7 +42,7 @@ When you wire a new OMOP table into the DAG, list every table whose data the new
 
 ## Out of scope (Phase 5+ tables)
 
-The following OMOP CDM v5.4 tables are intentionally NOT in this DAG. Add them in a future round if your organization's research scope expands:
+The following OMOP CDM v5.4 tables are intentionally NOT in this DAG. Add them in a future round if your research scope expands:
 
 - `cohort`, `cohort_definition` — populated by OHDSI Atlas, not by ETL
 - `note`, `note_nlp` — require NLP pipeline (separate track)

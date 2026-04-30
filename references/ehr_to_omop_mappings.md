@@ -1,8 +1,8 @@
-# EHR source to OMOP CDM v5.4 — your organization mapping reference
+# EHR source to OMOP CDM v5.4 — EHR-to-OMOP mapping reference
 
 > **Note:** Source table and column names in this reference are vendor-neutral placeholders. Substitute your EHR system's equivalent tables when authoring configs. The OMOP target columns and resolution patterns are EHR-agnostic.
 
-EHR source extracts for your organization land in bronze with **PascalCase** column names and no separators (for example `PatientID`, `AdmitDateTime`). On ingest, the companion **snake-case-column-renamer** skill can normalize names to `snake_case`; YAML configs must reference the **actual** bronze column names present in Unity Catalog.
+EHR source extracts land in bronze with **PascalCase** column names and no separators (for example `PatientID`, `AdmitDateTime`). On ingest, the companion **snake-case-column-renamer** skill can normalize names to `snake_case`; YAML configs must reference the **actual** bronze column names present in Unity Catalog.
 
 ## Table-level routing
 
