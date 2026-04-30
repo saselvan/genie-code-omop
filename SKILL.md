@@ -2,18 +2,33 @@
 name: omop-pipeline-builder
 description: "Use when scaffolding YAML transform configs from EHR bronze tables into OMOP CDM v5.4 silver, adding rows to the source_to_concept_map UC table (via direct SQL or a git-tracked bootstrap CSV) to map institution-specific codes to standard concepts, validating materialized OMOP silver tables (5-layer schema/PK/RI/domain/completeness checks), or wiring new OMOP tables into the resources/jobs.yml DAG. Triggers on YAML config authoring, vocabulary concept_id resolution strategy decisions (source_to_concept_map vs concept_table vs concept_table_mapped), or starting Spark Declarative Pipeline updates for specific OMOP tables."
 license: MIT
-compatibility: Designed for Databricks Genie Code Agent mode. Requires databricks-sdk, pyyaml, pydantic. Run pipeline triggering uses Pipelines Editor native run when available, scripts/run_pipeline.py from notebooks.
+compatibility: Designed for Databricks Genie Code Agent mode launched from a notebook with a Python-capable cluster (serverless or classic). Genie Code launched from the catalog browser, a Genie Space, or the SQL editor is backed by a SQL warehouse and CANNOT run this skill's Step 4 Pydantic validator — see "Compute requirements" below. Requires databricks-sdk, pyyaml, pydantic. Run pipeline triggering uses Pipelines Editor native run when available, scripts/run_pipeline.py from notebooks.
 metadata:
   author: Samuel Selvan (Databricks SA)
-  version: "1.2"
+  version: "1.3"
   built_for_session: "2026-04-29 OMOP transform framework hands-on"
   v1_1_notes: "Vendor-neutralized; standalone YAML validator (no host-repo cd); workspace-scope deploy; canonical example flipped to fact-table shape."
   v1_2_notes: "STCM guidance reframed: source_to_concept_map UC table is the runtime source of truth; CSV seed at seed_data/source_to_concept_map_custom.csv is one of two write paths (alongside direct SQL/MERGE), not the only path. Added 'Adding source_to_concept_map mappings' section."
+  v1_3_notes: "Compute requirements made explicit: skill requires a Python-capable notebook kernel; catalog browser / Genie Space / SQL editor surfaces (SQL warehouse compute) cannot run the Pydantic validator. Added 'Compute requirements' section. MANDATORY rule 2 now short-circuits with a verbatim user message instead of retrying when Python is unavailable."
 ---
 
 # OMOP Pipeline Builder
 
 Skill for authoring YAML-driven SDP (Spark Declarative Pipelines) transforms from EHR source bronze tables into OMOP CDM v5.4 tables in Unity Catalog, validating silver output, and triggering pipeline updates. Works with the shared config schema (`configs/_schema.yaml`) and the `source_to_concept_map` reference table in UC, which can be populated by direct SQL/MERGE or by the git-tracked bootstrap seed CSV at `seed_data/source_to_concept_map_custom.csv` (see [Adding source_to_concept_map mappings](#adding-source_to_concept_map-mappings)).
+
+## Compute requirements (read before launching)
+
+This skill **must be launched from a notebook** with a Python-capable cluster attached (serverless or classic). The Step 4 validator (`scripts/validate_yaml_schema.py`) is Pydantic — it requires a Python interpreter. The skill cannot run on a SQL warehouse.
+
+Genie Code can be invoked from several surfaces. Only the notebook surface works for config generation:
+
+| Launch surface | Backing compute | Skill works? |
+|---|---|---|
+| Notebook (any cluster, any DBR, serverless or classic) | Notebook kernel | **Yes — use this surface.** |
+| Catalog browser, Genie Space, SQL editor | SQL warehouse | No — Pydantic validation cannot execute. The agent will not be able to satisfy MANDATORY rule 2 below. |
+| Workflow / Job context | Job kernel | Yes (less common entry point). |
+
+If you are reading this skill from a SQL-warehouse-backed surface, stop and reopen the same prompt from a notebook. Do not try SQL-only workarounds — there is no SQL equivalent of the Pydantic schema. SQL-only Q&A about OMOP (e.g., "what columns does condition_occurrence need?") is fine on any surface; YAML generation is not.
 
 ## MANDATORY — Read before every task
 
@@ -21,7 +36,7 @@ You MUST follow these three rules on every config generation. Do not skip any of
 
 1. **Follow the Canonical YAML example in this skill before generating.** Read the [Canonical YAML example](#canonical-yaml-example) section below. Every generated config must match that structure exactly — `vocabulary_lookups` with `resolution` + `source_alias` + `fallback`, `expectations` as `{name, expr}` objects, `{catalog}.{bronze_schema}` placeholders in sources.
 
-2. **Validate before presenting.** After writing the YAML, import the standalone validator (`from validate_yaml_schema import validate`) and call `validate("/Workspace/Users/<your_user>/configs/your.yaml")`. Confirm 0 Pydantic errors. See [Step 4](#step-4--review-edit-and-validate-yaml) for the full 3-step Python pattern (CLI form is the always-safe fallback). If errors exist, fix the YAML and re-validate. Do NOT present the config or any summary to the user until validation passes with 0 errors.
+2. **Validate before presenting.** After writing the YAML, import the standalone validator (`from validate_yaml_schema import validate`) and call `validate("/Workspace/Users/<your_user>/configs/your.yaml")`. Confirm 0 Pydantic errors. See [Step 4](#step-4--review-edit-and-validate-yaml) for the full 3-step Python pattern (CLI form is the always-safe fallback). If errors exist, fix the YAML and re-validate. Do NOT present the config or any summary to the user until validation passes with 0 errors. **If `executeCode` cannot run Python — e.g., it errors that the runtime is a SQL warehouse, or import/`%pip` operations fail with "Python is not supported" — STOP immediately. Do not retry, do not attempt SQL-only workarounds, do not generate the YAML without validation. Tell the user verbatim: "This skill needs a Python-capable notebook kernel. Open Genie Code from a notebook (any cluster — serverless works) and rerun the same prompt. The catalog browser, Genie Space, and SQL editor surfaces back the agent with a SQL warehouse and cannot execute the Pydantic validator." See [Compute requirements](#compute-requirements-read-before-launching).**
 
 3. **Choose the right resolution strategy — ALWAYS query the reference schema, even if an existing config exists.** An existing config may use an outdated resolution strategy. Do NOT copy resolution strategies from old configs without verifying them. Query the reference schema EVERY TIME: `SELECT COUNT(*) FROM {catalog}.{ref_schema}.concept WHERE vocabulary_id = '<vocab>' AND concept_code = '<sample_code>'`. Then apply this decision tree:
    - **Local/institution-specific codes** (race, ethnicity, visit type) that do NOT exist in the reference schema → `resolution: source_to_concept_map`
