@@ -15,7 +15,7 @@ These rules are why this lives in the skill and not just in generic Databricks J
 
 **Step 1 — Read the OMOP dependency chart:** [`omop_dag_dependencies.md`](omop_dag_dependencies.md). Find your table's round, list every predecessor it depends on (including transitive ones — explicit deps are self-documenting).
 
-**Step 2 — Read the canonical DAG:** [`resources/jobs.yml`](../../../../resources/jobs.yml). Each placeholder task already shows the exact YAML shape you need.
+**Step 2 — Read the canonical DAG:** [`resources/jobs.yml`](../../../../resources/jobs.yml). Each placeholder task already shows the exact YAML shape you need. (Relative link only resolves inside the OMOP repo clone — when viewing the skill from `/Workspace/.assistant/skills/`, open `resources/jobs.yml` in your repo directly.)
 
 **Step 3 — Edit `resources/jobs.yml`:** uncomment the placeholder for your table (or add a new task block in the right Round section). The required shape:
 

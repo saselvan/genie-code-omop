@@ -5,8 +5,9 @@ license: MIT
 compatibility: Designed for Databricks Genie Code Agent mode. Requires databricks-sdk, pyyaml, pydantic. Run pipeline triggering uses Pipelines Editor native run when available, scripts/run_pipeline.py from notebooks.
 metadata:
   author: Samuel Selvan (Databricks SA)
-  version: "1.0"
+  version: "1.1"
   built_for_session: "2026-04-29 OMOP transform framework hands-on"
+  v1_1_notes: "Vendor-neutralized; standalone YAML validator (no host-repo cd); workspace-scope deploy; canonical example flipped to fact-table shape."
 ---
 
 # OMOP Pipeline Builder
@@ -19,7 +20,7 @@ You MUST follow these three rules on every config generation. Do not skip any of
 
 1. **Follow the Canonical YAML example in this skill before generating.** Read the [Canonical YAML example](#canonical-yaml-example) section below. Every generated config must match that structure exactly — `vocabulary_lookups` with `resolution` + `source_alias` + `fallback`, `expectations` as `{name, expr}` objects, `{catalog}.{bronze_schema}` placeholders in sources.
 
-2. **Validate before presenting.** After writing the YAML, run `scripts/validate_yaml_schema.validate("/Workspace/Users/<your_user>/configs/your.yaml")` and confirm 0 Pydantic errors. See [Step 4](#step-4--review-edit-and-validate-yaml) for the full workflow (CLI form is the always-safe fallback). If errors exist, fix and re-validate. Do NOT present the config or any summary to the user until validation passes with 0 errors.
+2. **Validate before presenting.** After writing the YAML, import the standalone validator (`from validate_yaml_schema import validate`) and call `validate("/Workspace/Users/<your_user>/configs/your.yaml")`. Confirm 0 Pydantic errors. See [Step 4](#step-4--review-edit-and-validate-yaml) for the full 3-step Python pattern (CLI form is the always-safe fallback). If errors exist, fix the YAML and re-validate. Do NOT present the config or any summary to the user until validation passes with 0 errors.
 
 3. **Choose the right resolution strategy — ALWAYS query the reference schema, even if an existing config exists.** An existing config may use an outdated resolution strategy. Do NOT copy resolution strategies from old configs without verifying them. Query the reference schema EVERY TIME: `SELECT COUNT(*) FROM {catalog}.{ref_schema}.concept WHERE vocabulary_id = '<vocab>' AND concept_code = '<sample_code>'`. Then apply this decision tree:
    - **Local/institution-specific codes** (race, ethnicity, visit type) that do NOT exist in the reference schema → `resolution: source_to_concept_map`
@@ -113,7 +114,7 @@ Run `DESCRIBE TABLE` (or `information_schema.columns`) on the bronze table(s). N
 
 ### Step 3 — Generate config via `scripts/generate_config.py`
 
-**Before generating, read `configs/_schema.yaml` for the required YAML structure, then read `configs/person.yaml` as a working example.** All generated configs MUST follow the same structural shape — especially `vocabulary_lookups` (requires `resolution`, `source_alias`, `fallback`) and `expectations` (requires `{name, expr}` objects). See the [Canonical YAML example](#canonical-yaml-example) section below.
+**Before generating, read `configs/_schema.yaml` for the required YAML structure, then read `configs/person.yaml` as a working example of overall file shape.** All generated configs MUST follow the same structural shape — especially `vocabulary_lookups` (requires `resolution`, `source_alias`, `fallback`) and `expectations` (requires `{name, expr}` objects). For **fact tables** (`condition_occurrence`, `procedure_occurrence`, `drug_exposure`), the structural rules — two-lookup pattern, `domain_id` on both lookups, hash-with-resolved-concept-id surrogate keys — are demonstrated by the [Canonical YAML example](#canonical-yaml-example) below. `configs/person.yaml` is the file-shape template; the inline canonical is the fact-table-rules template. They are not competing canonical poles.
 
 The generator supports two invocation modes. Pick whichever matches your Step 0 setup.
 
@@ -143,12 +144,12 @@ Requirements: `databricks-sdk`, `pyyaml`. SQL warehouse ID auto-discovers (first
 
 ### Step 4 — Review, edit, and validate YAML
 
-Fill in:
+Starting from the pure pass-through scaffold emitted by `scripts/generate_config.py`, rewrite or fill in:
 
-- `joins` when multiple `sources` are listed
-- `vocabulary_lookups` (and/or `source_to_concept_map` seeds for non-trivial codes)
-- `expectations` (`fail` / `drop` / `warn`) appropriate to the table
-- Any `column_mappings` the heuristics got wrong
+- `joins` when multiple `sources` are listed (the scaffold emits a single `src` source — replace with the right alias and add joins as needed)
+- `vocabulary_lookups` (and/or `source_to_concept_map` seeds for non-trivial codes) — the scaffold emits an empty list
+- `expectations` (`fail` / `drop` / `warn`) appropriate to the table — the scaffold emits empty fail/drop/warn lists
+- `column_mappings` — the scaffold emits one pass-through entry per bronze column (`target: snake_case(col), expr: src.<Col>`); rewrite each entry to the correct OMOP target column, drop columns that don't belong, add CASE expressions or vocabulary-resolved references as needed
 
 Replace any hardcoded catalog/schema names with `{catalog}` and `{bronze_schema}` placeholders in `sources[].table`. The pipeline's `config_loader.py` substitutes these at runtime from Spark conf. See `configs/person.yaml` for the pattern.
 
