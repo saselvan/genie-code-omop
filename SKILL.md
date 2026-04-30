@@ -104,7 +104,34 @@ print(f"OK: {cfg.table_name}, {len(cfg.column_mappings)} columns, {len(cfg.vocab
 - `source_alias` is required on every vocabulary lookup — must match an alias from `sources`.
 - `sources[].table` must use `{catalog}` and `{bronze_schema}` placeholders — never hardcode catalog names.
 
-**Only after validation passes:** present the config and summary to the user.
+**Only after validation passes:** present the config using this completion format:
+
+```
+Config validated: {table_name} — 0 errors
+
+  {n_columns} columns mapped | {n_lookups} vocabulary lookups | {n_expectations} expectations
+  Resolution: {brief strategy summary, e.g. "1x concept_table_mapped (ICD10CM→SNOMED), 1x concept_table"}
+
+What's next — pick one, or ask me anything:
+
+  1. Walk me through deploying this (explains deploy, pipeline run, and validation step by step)
+  2. Review vocabulary choices (why each resolution strategy was picked)
+  3. Deploy and run (just the commands — deploy, run pipeline, validate output)
+```
+
+**How to respond to each option:**
+
+**If user picks 1 (walk me through):** Give one step at a time with brief explanations. Start with: "Save this YAML to `configs/{table_name}.yaml` in your repo. Then run `CATALOG=your_catalog ./deploy.sh production` — this syncs the config to the UC Volume where the pipeline reads it." After the user confirms, give the pipeline run command. Then the validation step. Link to `docs/omop-runbook.md` Section 7 for reference.
+
+**If user picks 2 (review vocab choices):** For each vocabulary lookup, explain in one sentence why that resolution strategy was chosen. Example: "DiagnosisCode uses concept_table_mapped because ICD-10 codes are non-standard in OMOP — they need the Maps to crosswalk to get standard SNOMED concept_ids. Race uses source_to_concept_map because your race codes are institution-specific and don't exist in OHDSI Athena."
+
+**If user picks 3 (just commands):** Emit three commands, no explanation:
+```
+CATALOG=your_catalog ./deploy.sh production
+databricks bundle run omop_full_build -t production
+# After pipeline completes: open src/99_validate_omop_output.py, set table={table_name}, Run All
+```
+If the pipeline resource and job task don't exist yet for this table, say so and offer: "Ask me to wire {table_name} into the DAG — I'll generate the pipeline resource and job task YAML."
 
 ### Step 5 — Run the pipeline (dual mechanism)
 
