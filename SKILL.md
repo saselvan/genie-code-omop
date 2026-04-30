@@ -21,10 +21,10 @@ You MUST follow these three rules on every config generation. Do not skip any of
 
 2. **Validate before presenting.** After writing the YAML, run `config_loader.load_config("path/to/your.yaml")` and confirm 0 Pydantic errors. If errors exist, fix and re-validate. Do NOT present the config or any summary to the user until validation passes with 0 errors.
 
-3. **Choose the right resolution strategy.** Before telling the user to generate `source_to_concept_map` rows, query the reference schema: `SELECT COUNT(*) FROM {catalog}.{ref_schema}.concept WHERE vocabulary_id = '<vocab>' AND concept_code = '<sample_code>'`. Then:
+3. **Choose the right resolution strategy — ALWAYS query the reference schema, even if an existing config exists.** An existing config may use an outdated resolution strategy. Do NOT copy resolution strategies from old configs without verifying them. Query the reference schema EVERY TIME: `SELECT COUNT(*) FROM {catalog}.{ref_schema}.concept WHERE vocabulary_id = '<vocab>' AND concept_code = '<sample_code>'`. Then apply this decision tree:
    - **Local/institution-specific codes** (race, ethnicity, visit type) that do NOT exist in the reference schema → `resolution: source_to_concept_map`
-   - **Standard vocabularies that ARE the standard** for their domain (LOINC for Measurement, SNOMED for Condition) → `resolution: concept_table`
-   - **Standard vocabularies that need crosswalk** to the domain's standard (ICD10CM→SNOMED, CPT4→SNOMED, NDC→RxNorm, ICD10PCS→SNOMED) → `resolution: concept_table_mapped` with `domain_id` set to the target OMOP table's domain
+   - **Standard vocabularies that ARE the standard** for their domain (LOINC for Measurement) → `resolution: concept_table`
+   - **Standard vocabularies that need crosswalk** to the domain's standard (ICD10CM→SNOMED, CPT4→SNOMED, NDC→RxNorm, ICD10PCS→SNOMED) → `resolution: concept_table_mapped` with `domain_id` set to the target OMOP table's domain. **ICD-10 codes are NOT standard in OMOP — SNOMED is. Never use `concept_table` for `condition_concept_id` when the source is ICD-10.**
    - **`*_source_concept_id` columns** (traceability — stores the non-standard source concept) → `resolution: concept_table` with `standard_only: false`
    - For `concept_table_mapped`: set `domain_id` (required — filters one-to-many to the correct domain), `relationship_id` (default "Maps to", override for "Maps to unit" or "Maps to value"), `standard_only` (default true)
    - **One-to-many fan-out:** `concept_table_mapped` may produce multiple output rows per source row (OHDSI convention). Include the resolved concept_id in surrogate key expressions.
