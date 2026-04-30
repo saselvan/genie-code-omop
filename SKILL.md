@@ -54,19 +54,47 @@ Pair with the **snake-case-column-renamer** skill when bronze still uses PascalC
 
 ### Step 0 — Discover source schema (run once per workspace)
 
-Before generating any configs, discover what tables and columns actually exist in the bronze schema. The mapping reference (`references/ehr_to_omop_mappings.md`) uses vendor-neutral placeholder names — your EHR system's actual table and column names will differ.
+Before generating any configs, agree on the workspace-level build context: catalog, bronze schema, reference schema, and which bronze table each OMOP target reads from. There are two ways the agent can pick this up:
 
-Run these queries against your bronze schema:
+**Recommended (convention) — `discovery.yaml` lookup mode:**
 
-```sql
--- List all tables
-SHOW TABLES IN {catalog}.{bronze_schema};
+Drop a `discovery.yaml` file in the user workspace at `/Workspace/Users/<your_user>/discovery.yaml` (or another agreed path). Template lives at [`templates/discovery.yaml`](templates/discovery.yaml). The agent reads it once and uses it for every config it generates — `--catalog`, `--bronze-schema`, and `--bronze-table` are all resolved from the file given an OMOP target name.
 
--- For each table, describe columns
-DESCRIBE TABLE {catalog}.{bronze_schema}.<table_name>;
+```yaml
+catalog: <your_catalog>
+bronze_schema: <your_bronze_schema>
+ref_schema: reference
+table_mappings:
+  person: <your_patient_table>
+  visit_occurrence: <your_encounter_table>
+  condition_occurrence: <your_encounter_diagnosis_table>
 ```
 
-Compare the actual table and column names to the reference mapping file. Note any differences — these drive the `sources[].table` and column references in your YAML configs.
+A worked example for this repo's synthetic demo data is in [`templates/discovery.example.yaml`](templates/discovery.example.yaml) — non-normative, your bronze names will differ.
+
+**Fallback (explicit mode):**
+
+If no `discovery.yaml` is present, prompt the user once for catalog, bronze schema, and the bronze table for the OMOP target you're building. Pass them as explicit `--catalog`, `--bronze-schema`, `--bronze-table` flags to `scripts/generate_config.py`.
+
+**Verify against UC:**
+
+Either way, before generating, confirm the bronze tables actually exist:
+
+```sql
+SHOW TABLES IN {catalog}.{bronze_schema};
+DESCRIBE TABLE {catalog}.{bronze_schema}.<your_patient_table>;
+```
+
+`discovery.yaml` carries only what isn't in `DESCRIBE TABLE` (table-to-table mappings + environment). Column-level mappings belong in each per-table config's `column_mappings` block — they're checked against bronze every run, so they can't drift the way a separate equivalents file would.
+
+**Build order (OMOP DAG, see [`references/omop_dag_dependencies.md`](references/omop_dag_dependencies.md)):**
+
+Round 1: `person`, `care_site`, `provider`, `location` (no dependencies)
+Round 2: `visit_occurrence`, `observation_period` (depend on `person`)
+Round 3: `condition_occurrence`, `procedure_occurrence`, `drug_exposure`, `measurement` (depend on `person` + `visit_occurrence`)
+Round 4: `condition_era`, `drug_era` (depend on Round 3)
+
+Build in dependency order — the validator's L3 referential integrity layer needs upstream tables to exist.
 
 **Key output from Step 0:**
 - A list of actual bronze table names that map to OMOP targets (e.g., your encounters table, your diagnoses table)
@@ -87,7 +115,20 @@ Run `DESCRIBE TABLE` (or `information_schema.columns`) on the bronze table(s). N
 
 **Before generating, read `configs/_schema.yaml` for the required YAML structure, then read `configs/person.yaml` as a working example.** All generated configs MUST follow the same structural shape — especially `vocabulary_lookups` (requires `resolution`, `source_alias`, `fallback`) and `expectations` (requires `{name, expr}` objects). See the [Canonical YAML example](#canonical-yaml-example) section below.
 
-Run the generator with the bronze table FQN, target OMOP table name, and optional catalog/schema overrides:
+The generator supports two invocation modes. Pick whichever matches your Step 0 setup.
+
+**Lookup mode (recommended, with discovery.yaml):**
+
+```bash
+python scripts/generate_config.py \
+  --discovery-file /Workspace/Users/<your_user>/discovery.yaml \
+  --omop-table person \
+  --output ./configs/person.yaml
+```
+
+`--catalog`, `--bronze-schema`, and the bronze table FQN are all resolved from `discovery.yaml` based on `--omop-table`. Caller pays the cost once (writing `discovery.yaml`); every subsequent OMOP table is a one-flag invocation.
+
+**Explicit mode (no discovery.yaml):**
 
 ```bash
 python scripts/generate_config.py \

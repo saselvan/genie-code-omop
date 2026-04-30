@@ -1,0 +1,19 @@
+# discovery.example.yaml — worked example for THIS REPO'S synthetic demo data only.
+# NOT NORMATIVE. Your bronze table names will differ — copy templates/discovery.yaml
+# (with placeholder names) and substitute your actual UC table names instead.
+#
+# This file documents the table_mappings the demo (configs/person.yaml, configs/
+# visit_occurrence.yaml) was built against, so a developer reading those configs
+# can see how the discovery -> config relationship works end-to-end.
+
+catalog: samuels_fevm_catalog
+bronze_schema: bronze_clinical
+ref_schema: reference
+
+table_mappings:
+  person: patient
+  visit_occurrence: pat_enc
+  condition_occurrence: pat_enc_dx
+  procedure_occurrence: order_proc
+  drug_exposure: order_med
+  measurement: flowsheet_meas

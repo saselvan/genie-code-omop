@@ -114,12 +114,54 @@ def _passthrough_column_mappings(col_names: list[str]) -> list[dict[str, str]]:
     return out
 
 
+def _resolve_from_discovery(
+    discovery_path: str, omop_table: str
+) -> tuple[str, str, str]:
+    """Return (catalog, bronze_schema, bronze_table) for the requested OMOP target.
+
+    discovery.yaml shape (see templates/discovery.yaml):
+        catalog: <your_catalog>
+        bronze_schema: <your_bronze_schema>
+        table_mappings:
+          person: <your_patient_table>
+          visit_occurrence: <your_encounter_table>
+    """
+    p = Path(discovery_path).expanduser()
+    if not p.exists():
+        raise SystemExit(f"--discovery-file not found: {discovery_path}")
+    doc = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+
+    cat = doc.get("catalog")
+    sch = doc.get("bronze_schema")
+    mappings = doc.get("table_mappings") or {}
+    bronze = mappings.get(omop_table)
+
+    missing: list[str] = []
+    if not cat:
+        missing.append("catalog")
+    if not sch:
+        missing.append("bronze_schema")
+    if not bronze:
+        missing.append(f"table_mappings.{omop_table}")
+    if missing:
+        raise SystemExit(
+            f"discovery.yaml at {p} is missing required keys for omop-table={omop_table}: "
+            + ", ".join(missing)
+        )
+    return cat, sch, bronze
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="DESCRIBE bronze UC table and emit a pure pass-through OMOP YAML stub."
     )
-    parser.add_argument("--bronze-table", required=True, help="FQN catalog.schema.table")
+    parser.add_argument("--bronze-table", default=None, help="FQN catalog.schema.table (explicit mode)")
     parser.add_argument("--omop-table", required=True, help="OMOP target table name")
+    parser.add_argument(
+        "--discovery-file",
+        default=None,
+        help="Path to discovery.yaml (lookup mode). Resolves catalog/bronze_schema/bronze_table by --omop-table.",
+    )
     parser.add_argument(
         "--output",
         default=None,
@@ -139,13 +181,22 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    fqn = args.bronze_table.strip()
-    parts = fqn.split(".")
-    if len(parts) != 3:
-        raise SystemExit("--bronze-table must be catalog.schema.table")
-
-    cat, schema, table = parts
-    bronze_schema = args.bronze_schema or schema
+    if args.discovery_file:
+        cat, schema, table = _resolve_from_discovery(args.discovery_file, args.omop_table)
+        fqn = f"{cat}.{schema}.{table}"
+        bronze_schema = args.bronze_schema or schema
+    else:
+        if not args.bronze_table:
+            raise SystemExit(
+                "Either --discovery-file <path> (lookup mode) or --bronze-table <fqn> "
+                "(explicit mode) is required."
+            )
+        fqn = args.bronze_table.strip()
+        parts = fqn.split(".")
+        if len(parts) != 3:
+            raise SystemExit("--bronze-table must be catalog.schema.table")
+        cat, schema, table = parts
+        bronze_schema = args.bronze_schema or schema
 
     out_path = Path(
         args.output or Path("configs") / f"{args.omop_table.lower()}.yaml"

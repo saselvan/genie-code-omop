@@ -1,0 +1,24 @@
+# discovery.yaml — workspace-level OMOP build context for the omop-pipeline-builder skill.
+#
+# Purpose: carry only the information the agent CANNOT discover from Unity Catalog itself
+# — catalog/schema names + the semantic mapping from each OMOP target table to YOUR
+# organization's bronze table name. Genie has UC access, so columns and join keys are
+# discovered via DESCRIBE TABLE; column-level mappings belong in each per-table config's
+# column_mappings block (where they're checked against bronze every run), NOT here.
+#
+# Convention path: /Workspace/Users/<your_user>/discovery.yaml
+# Convention is recommended for repeatable use, NOT a hard prerequisite. The agent
+# can also be invoked with explicit --catalog / --bronze-schema / --bronze-table args.
+
+catalog: <your_catalog>
+bronze_schema: <your_bronze_schema>
+ref_schema: reference
+
+# Map each OMOP CDM v5.4 target table to its source bronze table in your workspace.
+# Add entries for additional OMOP tables (procedure_occurrence, drug_exposure, etc.)
+# as you build them. Build order follows the OMOP DAG (Round 1 -> Round 4):
+# person -> visit_occurrence -> condition_occurrence -> procedure_occurrence/drug_exposure/measurement.
+table_mappings:
+  person: <your_patient_table>
+  visit_occurrence: <your_encounter_table>
+  condition_occurrence: <your_encounter_diagnosis_table>
