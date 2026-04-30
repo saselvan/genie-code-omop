@@ -52,6 +52,29 @@ Pair with the **snake-case-column-renamer** skill when bronze still uses PascalC
 
 ## Step-by-step workflow
 
+### Step 0 — Discover source schema (run once per workspace)
+
+Before generating any configs, discover what tables and columns actually exist in the bronze schema. The mapping reference (`references/ehr_to_omop_mappings.md`) uses vendor-neutral placeholder names — your EHR system's actual table and column names will differ.
+
+Run these queries against your bronze schema:
+
+```sql
+-- List all tables
+SHOW TABLES IN {catalog}.{bronze_schema};
+
+-- For each table, describe columns
+DESCRIBE TABLE {catalog}.{bronze_schema}.<table_name>;
+```
+
+Compare the actual table and column names to the reference mapping file. Note any differences — these drive the `sources[].table` and column references in your YAML configs.
+
+**Key output from Step 0:**
+- A list of actual bronze table names that map to OMOP targets (e.g., your encounters table, your diagnoses table)
+- The actual column names for join keys (PatientID equivalent, EncounterID equivalent)
+- The actual column names for coded fields (diagnosis codes, procedure codes, medication codes)
+
+Save this mapping — you'll reference it in every subsequent step. The Genie Code agent can also discover this automatically by running DESCRIBE TABLE when generating configs.
+
 ### Step 1 — Confirm the target OMOP table
 
 Agree on the OMOP CDM v5.4 target (for example `person`, `visit_occurrence`, `condition_occurrence`). Confirm the Unity Catalog names: catalog (e.g. `samuels_fevm_catalog` for dev, `your_catalog` for your organization), `core_omop` for silver, `bronze_clinical` for bronze, `reference` for vocab. Use **three-part** names only: `{catalog}.{schema}.{table}`.
@@ -207,13 +230,13 @@ This is the exact shape that the pipeline and Pydantic schema expect. Use this a
 ```yaml
 table_name: person
 target_schema: core_omop
-description: "OMOP CDM v5.4 Person from EHR source patient and identity_id."
+description: "OMOP CDM v5.4 Person from EHR source patient and patient_identifier."
 
 sources:
   - alias: pat
     table: "{catalog}.{bronze_schema}.patient"
   - alias: id
-    table: "{catalog}.{bronze_schema}.identity_id"
+    table: "{catalog}.{bronze_schema}.patient_identifier"
 
 joins:
   - left: pat
@@ -273,13 +296,13 @@ Use this template for clinical fact tables (condition, procedure, drug) where so
 ```yaml
 table_name: condition_occurrence
 target_schema: core_omop
-description: "OMOP CDM v5.4 condition_occurrence from pat_enc_dx."
+description: "OMOP CDM v5.4 condition_occurrence from encounter_diagnosis."
 
 sources:
   - alias: dx
-    table: "{catalog}.{bronze_schema}.pat_enc_dx"
+    table: "{catalog}.{bronze_schema}.encounter_diagnosis"
   - alias: enc
-    table: "{catalog}.{bronze_schema}.pat_enc"
+    table: "{catalog}.{bronze_schema}.encounter"
 
 joins:
   - left: dx
@@ -343,13 +366,13 @@ Use this template for measurement tables where the source vocabulary (e.g. LOINC
 ```yaml
 table_name: measurement
 target_schema: core_omop
-description: "OMOP CDM v5.4 measurement from flowsheet_meas."
+description: "OMOP CDM v5.4 measurement from clinical_measurement."
 
 sources:
   - alias: fs
-    table: "{catalog}.{bronze_schema}.flowsheet_meas"
+    table: "{catalog}.{bronze_schema}.clinical_measurement"
   - alias: enc
-    table: "{catalog}.{bronze_schema}.pat_enc"
+    table: "{catalog}.{bronze_schema}.encounter"
 
 joins:
   - left: fs
