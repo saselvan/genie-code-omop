@@ -1,18 +1,19 @@
 ---
 name: omop-pipeline-builder
-description: "Use when scaffolding YAML transform configs from EHR bronze tables into OMOP CDM v5.4 silver, generating source_to_concept_map seed rows from distinct source codes, validating materialized OMOP silver tables (5-layer schema/PK/RI/domain/completeness checks), or wiring new OMOP tables into the resources/jobs.yml DAG. Triggers on YAML config authoring, vocabulary concept_id resolution strategy decisions (source_to_concept_map vs concept_table vs concept_table_mapped), or starting Spark Declarative Pipeline updates for specific OMOP tables."
+description: "Use when scaffolding YAML transform configs from EHR bronze tables into OMOP CDM v5.4 silver, adding rows to the source_to_concept_map UC table (via direct SQL or a git-tracked bootstrap CSV) to map institution-specific codes to standard concepts, validating materialized OMOP silver tables (5-layer schema/PK/RI/domain/completeness checks), or wiring new OMOP tables into the resources/jobs.yml DAG. Triggers on YAML config authoring, vocabulary concept_id resolution strategy decisions (source_to_concept_map vs concept_table vs concept_table_mapped), or starting Spark Declarative Pipeline updates for specific OMOP tables."
 license: MIT
 compatibility: Designed for Databricks Genie Code Agent mode. Requires databricks-sdk, pyyaml, pydantic. Run pipeline triggering uses Pipelines Editor native run when available, scripts/run_pipeline.py from notebooks.
 metadata:
   author: Samuel Selvan (Databricks SA)
-  version: "1.1"
+  version: "1.2"
   built_for_session: "2026-04-29 OMOP transform framework hands-on"
   v1_1_notes: "Vendor-neutralized; standalone YAML validator (no host-repo cd); workspace-scope deploy; canonical example flipped to fact-table shape."
+  v1_2_notes: "STCM guidance reframed: source_to_concept_map UC table is the runtime source of truth; CSV seed at seed_data/source_to_concept_map_custom.csv is one of two write paths (alongside direct SQL/MERGE), not the only path. Added 'Adding source_to_concept_map mappings' section."
 ---
 
 # OMOP Pipeline Builder
 
-Skill for authoring YAML-driven SDP (Spark Declarative Pipelines) transforms from EHR source bronze tables into OMOP CDM v5.4 tables in Unity Catalog, validating silver output, and triggering pipeline updates. Works with the shared config schema (`configs/_schema.yaml`) and vocabulary seed data (`seed_data/source_to_concept_map_custom.csv`).
+Skill for authoring YAML-driven SDP (Spark Declarative Pipelines) transforms from EHR source bronze tables into OMOP CDM v5.4 tables in Unity Catalog, validating silver output, and triggering pipeline updates. Works with the shared config schema (`configs/_schema.yaml`) and the `source_to_concept_map` reference table in UC, which can be populated by direct SQL/MERGE or by the git-tracked bootstrap seed CSV at `seed_data/source_to_concept_map_custom.csv` (see [Adding source_to_concept_map mappings](#adding-source_to_concept_map-mappings)).
 
 ## MANDATORY — Read before every task
 
@@ -35,7 +36,7 @@ You MUST follow these three rules on every config generation. Do not skip any of
 Use this skill when the user wants to:
 
 - Scaffold a new OMOP table transform config from a bronze EHR source table (or joined bronze sources)
-- Generate `source_to_concept_map` seed rows from distinct source codes
+- Add rows to the `source_to_concept_map` UC table (the runtime source of truth) — either via direct SQL/MERGE for ongoing ops, or via a git-tracked bootstrap CSV for repo-shipped mappings (see [Adding source_to_concept_map mappings](#adding-source_to_concept_map-mappings))
 - Validate a materialized OMOP table in `core_omop` (schema, keys, concept FKs, domains, null rates)
 - Start and monitor a Spark Declarative Pipeline (SDP) update for a specific `table_name` parameter
 - Understand EHR-to-OMOP column semantics, vocabulary domains, or the `visit_type_concept_id` provenance rule
@@ -46,7 +47,7 @@ Pair with the **snake-case-column-renamer** skill when bronze still uses PascalC
 
 1. Documents the end-to-end workflow from bronze inspection through YAML editing, validation, and pipeline run.
 2. Provides `scripts/generate_config.py` to `DESCRIBE` a bronze table via SQL and emit a stub YAML (sources, joins, `column_mappings`, TODO blocks for `vocabulary_lookups` and `expectations`).
-3. Provides `scripts/generate_source_mappings.py` to resolve distinct source codes against `{catalog}.{ref_schema}.concept` and emit OHDSI-shaped `source_to_concept_map` CSV.
+3. Provides `scripts/generate_source_mappings.py` to resolve distinct source codes against `{catalog}.{ref_schema}.concept` and emit an OHDSI-shaped CSV that can be merged into the `source_to_concept_map` UC table (the runtime source of truth — see [Adding source_to_concept_map mappings](#adding-source_to_concept_map-mappings)).
 4. Provides `scripts/validate_omop.py` to run five validation layers against a target table.
 5. Provides `scripts/run_pipeline.py` to call `WorkspaceClient.pipelines.start_update` with optional `table_name` parameters and poll to completion.
 6. Ships reference docs for CDM columns, EHR source mappings, and vocabulary domains.
@@ -143,7 +144,7 @@ Requirements: `databricks-sdk`, `pyyaml`. SQL warehouse ID auto-discovers (first
 Starting from the pure pass-through scaffold emitted by `scripts/generate_config.py`, rewrite or fill in:
 
 - `joins` when multiple `sources` are listed (the scaffold emits a single `src` source — replace with the right alias and add joins as needed)
-- `vocabulary_lookups` (and/or `source_to_concept_map` seeds for non-trivial codes) — the scaffold emits an empty list
+- `vocabulary_lookups` — the scaffold emits an empty list. If a lookup uses `resolution: source_to_concept_map`, also plan how the required rows will land in the UC `source_to_concept_map` table — see [Adding source_to_concept_map mappings](#adding-source_to_concept_map-mappings).
 - `expectations` (`fail` / `drop` / `warn`) appropriate to the table — the scaffold emits empty fail/drop/warn lists
 - `column_mappings` — the scaffold emits one pass-through entry per bronze column (`target: snake_case(col), expr: src.<Col>`); rewrite each entry to the correct OMOP target column, drop columns that don't belong, add CASE expressions or vocabulary-resolved references as needed
 
@@ -375,6 +376,46 @@ The canonical example above documents the structural rules for `concept_table_ma
 - **Pipeline parameters** must match how your SDP code reads `spark.conf` (for example `table_name`); mismatches cause the wrong flow or missing config path.
 - **Surrogate key stability under full_refresh.** OMOP rebuilds are batch snapshots. `ROW_NUMBER() OVER (ORDER BY ...)` produces unstable keys across runs because row ordering is non-deterministic when source data changes. `xxhash64(CONCAT_WS('|', ...))` is deterministic and idempotent — same input, same key, regardless of rebuild timing. `ROW_NUMBER` also requires a single-reducer global sort that does not scale on large fact tables. **Always prefer `xxhash64`.**
 
+## Adding `source_to_concept_map` mappings
+
+**The runtime source of truth is the Delta table `{catalog}.{ref_schema}.source_to_concept_map` in UC.** SDP pipelines join to this table at run time (see `src/vocab_resolver.py`); the resolver does not read CSVs. A lookup with `resolution: source_to_concept_map` will silently return `0` (the fallback) for any code that does not have a row in this table.
+
+There are two supported paths for adding rows. Pick based on who owns the mapping and how often it changes.
+
+**Path A — Direct table writes (recommended for ongoing ops, integrations, large/changing mappings):**
+
+Write to the table via SQL. Works for one-off rows, scheduled MERGEs from upstream reference systems, and Lakeflow Connect ingestion. Mappings are governed by UC ACLs and audited like any other Delta table; updates take effect immediately without redeploying the pipeline.
+
+```sql
+INSERT INTO `{catalog}`.`{ref_schema}`.`source_to_concept_map`
+  (source_code, source_concept_id, source_vocabulary_id,
+   source_code_description, target_concept_id, target_vocabulary_id,
+   valid_start_date, valid_end_date, invalid_reason)
+VALUES
+  ('Heart Rate',          0, 'Flowsheet', 'Heart rate (LOINC 8867-4)',  3027018, 'LOINC', '1970-01-01', '2099-12-31', NULL),
+  ('Blood Pressure Systolic', 0, 'Flowsheet', 'Systolic BP (LOINC 8480-6)', 3004249, 'LOINC', '1970-01-01', '2099-12-31', NULL);
+```
+
+For ongoing maintenance, prefer `MERGE INTO` from a UC-table-shaped staging source so the upsert is idempotent.
+
+**Path B — Git-tracked bootstrap CSV (recommended for small, stable, repo-shipped mappings):**
+
+`src/01_load_vocabulary.py` (one-time setup notebook) MERGEs `seed_data/source_to_concept_map_custom.csv` into the table on each run. Use this path for mappings that should travel with the codebase: foundational race / ethnicity / gender / visit-type / language code crosswalks. Edit the CSV, commit, redeploy, re-run the load notebook.
+
+`scripts/generate_source_mappings.py` produces a CSV in this exact OHDSI shape from a distinct-codes scan of bronze. Treat its output as a starting point for Path B (or as INSERT-statement source material for Path A) — it cannot resolve codes that are not already in `concept` for the given `source_vocabulary_id`, so unresolved rows are written with `target_concept_id = 0` and need manual mapping.
+
+**Picking a path:**
+
+| Mapping property | Path A (table writes) | Path B (CSV seed) |
+|---|---|---|
+| Owner | Data engineering / stewards | Repo / framework code |
+| Update cadence | Anytime (no redeploy) | At deploy time |
+| Volume | Any | Small (typically < a few hundred rows) |
+| Source of truth | The table itself | The CSV in git, MERGEd into the table |
+| Best fit | Org-wide reference systems, Lakeflow Connect, ad-hoc additions | Foundational code crosswalks shipped with the repo |
+
+Both paths converge on the same physical table — the pipeline does not care which path put the row there. Mixing both is fine: bootstrap mappings live in the CSV; ongoing additions go through SQL.
+
 ## Healthcare / OMOP tokens
 
 **OMOP table names this skill recognizes (clinical scope):**
@@ -418,7 +459,7 @@ If any fixtures fail after your change, the change broke the skill's contract. F
 - [`references/omop_dag_dependencies.md`](references/omop_dag_dependencies.md) — Round 1–4 dependency chart for `resources/jobs.yml`
 - [`templates/discovery.yaml`](templates/discovery.yaml) — file-shape reference for the optional `discovery.yaml` artifact (NOT a setup precondition)
 - [`scripts/generate_config.py`](scripts/generate_config.py) — bronze `DESCRIBE` → pure pass-through YAML stub
-- [`scripts/generate_source_mappings.py`](scripts/generate_source_mappings.py) — distinct codes → `source_to_concept_map` CSV
+- [`scripts/generate_source_mappings.py`](scripts/generate_source_mappings.py) — distinct codes → CSV in OHDSI `source_to_concept_map` shape (input for either bootstrap-CSV or direct-SQL paths; see [Adding source_to_concept_map mappings](#adding-source_to_concept_map-mappings))
 - [`scripts/validate_yaml_schema.py`](scripts/validate_yaml_schema.py) — standalone Pydantic config validator (CLI + `validate(path)`)
 - [`scripts/validate_omop.py`](scripts/validate_omop.py) — five-layer UC table validation
 - [`scripts/run_pipeline.py`](scripts/run_pipeline.py) — start and poll pipeline updates

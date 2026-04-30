@@ -1,5 +1,23 @@
 #!/usr/bin/env python3
-"""Build source_to_concept_map CSV rows by resolving distinct source codes to concept_ids."""
+"""Resolve distinct source codes against ``concept`` and emit an OHDSI-shaped CSV.
+
+The CSV is a bootstrap input, not the runtime artifact. The OMOP transforms join to
+the Delta table ``{catalog}.{ref_schema}.source_to_concept_map`` in UC at run time;
+the resolver does not read CSVs.
+
+Use the CSV in either of two ways (see ``SKILL.md`` -> "Adding source_to_concept_map
+mappings"):
+
+  1. Bootstrap: drop rows into ``seed_data/source_to_concept_map_custom.csv`` and let
+     ``src/01_load_vocabulary.py`` MERGE them into the UC table on the next vocabulary
+     load. Best for small, foundational, repo-shipped mappings.
+  2. Direct table writes: hand-translate the CSV rows into ``INSERT`` / ``MERGE`` SQL
+     against ``{catalog}.{ref_schema}.source_to_concept_map``. Best for ongoing ops,
+     integrations with upstream reference systems, and large or fast-changing mappings.
+
+Either way, unresolved rows (``target_concept_id = 0``) require manual mapping before
+they will resolve at run time.
+"""
 
 from __future__ import annotations
 
@@ -74,7 +92,13 @@ def _chunks(items: list[str], size: int) -> Iterable[list[str]]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Resolve distinct source codes to concept_ids and write source_to_concept_map CSV."
+        description=(
+            "Resolve distinct source codes to concept_ids and write a CSV in OHDSI "
+            "source_to_concept_map shape. The CSV is a bootstrap input: drop into "
+            "seed_data/source_to_concept_map_custom.csv (MERGEd by 01_load_vocabulary.py) "
+            "for repo-shipped mappings, or use as INSERT/MERGE source material against "
+            "the UC source_to_concept_map table for ongoing ops."
+        )
     )
     parser.add_argument("--source-vocabulary-id", required=True, help="e.g. ICD10CM")
     parser.add_argument("--source-table", required=True, help="FQN catalog.schema.table")

@@ -20,7 +20,7 @@ Domains are stored on `concept.domain_id`. Vocabularies are stored on `concept.v
 
 1. **Standard concept pipeline:** `source_code` in a known `vocabulary_id` → row in `concept` → use `concept_id` as the `*_concept_id` field when it is a **standard** concept per your ETL rules.
 2. **Maps to / Maps from:** use `concept_relationship` when the source vocabulary entry is non-standard but links to a standard concept (common for ICD/SNOMED bridges).
-3. **STCM:** when the hierarchy does not cover an org-specific code set, add rows to **`source_to_concept_map`** (and load into the UC reference table) so the resolver can translate **source_code + source_vocabulary_id → target_concept_id**.
+3. **STCM:** when the hierarchy does not cover an org-specific code set, add rows to the **`source_to_concept_map`** Delta table in UC (`{catalog}.{ref_schema}.source_to_concept_map`) so the resolver can translate **source_code + source_vocabulary_id → target_concept_id**. The table is the runtime source of truth — the resolver does not read CSVs. Two supported write paths: direct SQL/MERGE (recommended for ongoing ops) or the git-tracked bootstrap CSV at `seed_data/source_to_concept_map_custom.csv` MERGEd by `src/01_load_vocabulary.py` (recommended for repo-shipped foundational mappings). See [SKILL.md → Adding source_to_concept_map mappings](../SKILL.md#adding-source_to_concept_map-mappings).
 
 ## CPT4 licensing note
 
