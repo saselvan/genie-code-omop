@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Five-layer validation for materialized OMOP CDM tables in Unity Catalog."""
+"""Five-layer validation for materialized OMOP CDM tables in Unity Catalog.
+
+Auth is handled by Databricks runtime when invoked from Genie Code Agent.
+--profile only applies for local development against ~/.databrickscfg.
+"""
 
 from __future__ import annotations
 
@@ -24,13 +28,33 @@ class ColSpec:
     domain: str | None
 
 
-def _warehouse_id(explicit: str | None) -> str:
-    wid = explicit or os.environ.get("DATABRICKS_WAREHOUSE_ID")
-    if not wid:
-        raise SystemExit(
-            "SQL warehouse ID required: pass --warehouse-id or set DATABRICKS_WAREHOUSE_ID"
+def _resolve_warehouse_id(explicit: str | None, w: WorkspaceClient | None = None) -> str:
+    """Resolve a SQL warehouse ID via explicit arg, env var, or auto-discovery.
+
+    1. Explicit --warehouse-id wins.
+    2. DATABRICKS_WAREHOUSE_ID env var.
+    3. First running serverless warehouse via SDK list.
+    4. Raise with a clear message if none available.
+    """
+    if explicit:
+        return explicit
+    env = os.environ.get("DATABRICKS_WAREHOUSE_ID")
+    if env:
+        return env
+    client = w or WorkspaceClient()
+    for wh in client.warehouses.list():
+        state = getattr(wh, "state", None)
+        wtype = getattr(wh, "warehouse_type", None)
+        is_running = str(state).upper().endswith("RUNNING")
+        is_serverless = "SERVERLESS" in str(wtype).upper() or bool(
+            getattr(wh, "enable_serverless_compute", False)
         )
-    return wid
+        if is_running and is_serverless and wh.id:
+            return wh.id
+    raise SystemExit(
+        "No running serverless warehouse found. Pass --warehouse-id, "
+        "set DATABRICKS_WAREHOUSE_ID, or start a warehouse in the workspace."
+    )
 
 
 def _sql(
@@ -69,7 +93,7 @@ def _norm_type(t: str) -> str:
 
 
 def parse_omop_spec_md(text: str) -> dict[str, list[ColSpec]]:
-    """Parse the OMOP reference markdown: ## table_name followed by a pipe table."""
+    """Parse the OMOP CDM v5.4 spec markdown: ## table_name followed by a pipe table."""
     sections = re.split(r"(?m)^##\s+(.+)\s*$", text)
     out: dict[str, list[ColSpec]] = {}
     if len(sections) < 3:
@@ -150,8 +174,12 @@ def main() -> None:
         default=None,
         help="Path to omop_cdm_v54_spec.md (default: alongside script ../references/...)",
     )
-    parser.add_argument("--warehouse-id", default=None)
-    parser.add_argument("--profile", default=None)
+    parser.add_argument("--warehouse-id", default=None, help="SQL warehouse ID (auto-discovers if omitted)")
+    parser.add_argument(
+        "--profile",
+        default=None,
+        help="Databricks CLI profile (local dev only; ignored on serverless executeCode)",
+    )
     args = parser.parse_args()
 
     fqn = args.table.strip().strip("`")
@@ -176,7 +204,7 @@ def main() -> None:
         )
 
     w = WorkspaceClient(profile=args.profile) if args.profile else WorkspaceClient()
-    wh = _warehouse_id(args.warehouse_id)
+    wh = _resolve_warehouse_id(args.warehouse_id, w=w)
     fq = f"`{cat}`.`{sch}`.`{tbl}`"
     concept = f"`{cat}`.`{args.ref_schema}`.concept"
 

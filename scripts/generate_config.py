@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""Generate a stub OMOP transform YAML from a bronze table DESCRIBE (Databricks SQL)."""
+"""Generate a stub OMOP transform YAML from a bronze table DESCRIBE (Databricks SQL).
+
+Pure pass-through scaffolder: for every bronze column, emits
+  {target: snake_case(col), expr: f"src.{col}"}
+
+No domain heuristics. The agent rewrites column_mappings based on the OMOP
+target columns, the resolution decision tree (MANDATORY rule 3 in SKILL.md),
+and the canonical condition_occurrence example. Structural patterns
+(resolution strategies, two-lookup rule, hash keys, domain_id) come from
+the skill, not from this script.
+
+Auth is handled by Databricks runtime when invoked from Genie Code Agent.
+--profile only applies for local development against ~/.databrickscfg.
+"""
 
 from __future__ import annotations
 
@@ -14,13 +27,33 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementState
 
 
-def _warehouse_id(explicit: str | None) -> str:
-    wid = explicit or os.environ.get("DATABRICKS_WAREHOUSE_ID")
-    if not wid:
-        raise SystemExit(
-            "SQL warehouse ID required: pass --warehouse-id or set DATABRICKS_WAREHOUSE_ID"
+def _resolve_warehouse_id(explicit: str | None, w: WorkspaceClient | None = None) -> str:
+    """Resolve a SQL warehouse ID via explicit arg, env var, or auto-discovery.
+
+    1. Explicit --warehouse-id wins.
+    2. DATABRICKS_WAREHOUSE_ID env var.
+    3. First running serverless warehouse via SDK list.
+    4. Raise with a clear message if none available.
+    """
+    if explicit:
+        return explicit
+    env = os.environ.get("DATABRICKS_WAREHOUSE_ID")
+    if env:
+        return env
+    client = w or WorkspaceClient()
+    for wh in client.warehouses.list():
+        state = getattr(wh, "state", None)
+        wtype = getattr(wh, "warehouse_type", None)
+        is_running = str(state).upper().endswith("RUNNING")
+        is_serverless = "SERVERLESS" in str(wtype).upper() or bool(
+            getattr(wh, "enable_serverless_compute", False)
         )
-    return wid
+        if is_running and is_serverless and wh.id:
+            return wh.id
+    raise SystemExit(
+        "No running serverless warehouse found. Pass --warehouse-id, "
+        "set DATABRICKS_WAREHOUSE_ID, or start a warehouse in the workspace."
+    )
 
 
 def _execute_sql(
@@ -61,110 +94,48 @@ def _pascal_to_snake(name: str) -> str:
     return re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
 
-def _guess_column_mappings(
-    col_names: list[str], omop_table: str
-) -> list[dict[str, str]]:
-    """Heuristic column_mappings; caller must review."""
-    mappings: list[dict[str, str]] = []
-    lower_omop = omop_table.lower()
+def _passthrough_column_mappings(col_names: list[str]) -> list[dict[str, str]]:
+    """Pure pass-through: one mapping per bronze column, snake_case target.
 
+    The agent rewrites these based on the canonical example and resolution
+    decision tree. No CASE statements, no date explosion, no concept_id stubs.
+    """
+    seen: set[str] = set()
+    out: list[dict[str, str]] = []
     for col in col_names:
         c = col.strip()
         if not c:
             continue
-        cl = c.lower()
-        snake = _pascal_to_snake(c)
-
-        # Primary keys / person
-        if cl == "patientid" and lower_omop == "person":
-            mappings.append({"target": "person_id", "expr": f"src.{c}"})
+        target = _pascal_to_snake(c)
+        if target in seen:
             continue
-        if cl.endswith("id") and cl not in ("patientid",):
-            if lower_omop == "visit_occurrence" and cl == "encounterid":
-                mappings.append({"target": "visit_occurrence_id", "expr": f"src.{c}"})
-                continue
-            guess_target = f"{snake}" if snake.endswith("_id") else f"{snake}_id"
-            mappings.append({"target": guess_target, "expr": f"src.{c}"})
-            continue
-
-        if cl == "birthdate" and lower_omop == "person":
-            mappings.extend(
-                [
-                    {"target": "year_of_birth", "expr": f"YEAR(src.{c})"},
-                    {"target": "month_of_birth", "expr": f"MONTH(src.{c})"},
-                    {"target": "day_of_birth", "expr": f"DAY(src.{c})"},
-                    {"target": "birth_datetime", "expr": f"CAST(src.{c} AS TIMESTAMP)"},
-                ]
-            )
-            continue
-
-        if cl.endswith("datetime") or cl.endswith("timestamp"):
-            mappings.append({"target": snake, "expr": f"src.{c}"})
-            continue
-
-        if cl.endswith("date"):
-            mappings.append({"target": snake, "expr": f"src.{c}"})
-            continue
-
-        if "gender" in cl and lower_omop == "person":
-            mappings.append(
-                {
-                    "target": "gender_concept_id",
-                    "expr": (
-                        f"CASE WHEN src.{c} = 'M' THEN 8507 "
-                        f"WHEN src.{c} = 'F' THEN 8532 ELSE 0 END"
-                    ),
-                }
-            )
-            continue
-
-        if cl in ("racecode", "ethnicitycode"):
-            suffix = "race" if "race" in cl else "ethnicity"
-            mappings.append(
-                {
-                    "target": f"{suffix}_concept_id",
-                    "expr": f"/* TODO: vocab lookup or source_to_concept_map for src.{c} */ CAST(NULL AS INT)",
-                }
-            )
-            continue
-
-        # default: pass through as snake_case target
-        mappings.append({"target": snake, "expr": f"src.{c}"})
-
-    # de-duplicate targets preserving first
-    seen: set[str] = set()
-    out: list[dict[str, str]] = []
-    for m in mappings:
-        t = m["target"]
-        if t in seen:
-            continue
-        seen.add(t)
-        out.append(m)
+        seen.add(target)
+        out.append({"target": target, "expr": f"src.{c}"})
     return out
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="DESCRIBE bronze UC table and emit stub OMOP YAML config."
+        description="DESCRIBE bronze UC table and emit a pure pass-through OMOP YAML stub."
     )
     parser.add_argument("--bronze-table", required=True, help="FQN catalog.schema.table")
     parser.add_argument("--omop-table", required=True, help="OMOP target table name")
     parser.add_argument(
         "--output",
         default=None,
-        help="Output YAML path (default ./configs/{omop-table}.yaml)",
+        help="Output YAML path (default ./configs/{omop-table}.yaml). Caller-supplied.",
     )
     parser.add_argument("--catalog", default=None, help="Default UC catalog for SQL session")
     parser.add_argument(
         "--bronze-schema",
         default=None,
-        help="Bronze schema name for placeholders (e.g. bronze_clinical)",
+        help="Bronze schema name for placeholders (default: second segment of --bronze-table FQN)",
     )
-    parser.add_argument("--warehouse-id", default=None, help="SQL warehouse ID")
+    parser.add_argument("--warehouse-id", default=None, help="SQL warehouse ID (auto-discovers if omitted)")
     parser.add_argument(
         "--profile",
         default=None,
-        help="Databricks CLI profile for WorkspaceClient",
+        help="Databricks CLI profile (local dev only; ignored on serverless executeCode)",
     )
     args = parser.parse_args()
 
@@ -182,7 +153,7 @@ def main() -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     w = WorkspaceClient(profile=args.profile) if args.profile else WorkspaceClient()
-    wh = _warehouse_id(args.warehouse_id)
+    wh = _resolve_warehouse_id(args.warehouse_id, w=w)
 
     rows = _execute_sql(
         w,
@@ -204,7 +175,7 @@ def main() -> None:
             continue
         col_names.append(name)
 
-    column_mappings = _guess_column_mappings(col_names, args.omop_table.lower())
+    column_mappings = _passthrough_column_mappings(col_names)
 
     doc: dict[str, Any] = {
         "table_name": args.omop_table.lower(),
@@ -223,7 +194,11 @@ def main() -> None:
     }
 
     header = f"""# Generated stub for OMOP table '{args.omop_table}' from bronze `{fqn}`.
-# TODO(vocabulary_lookups): Add rows per CONTEXT_ATOM — reference.concept and/or source_to_concept_map.
+# This is a pure pass-through scaffold: one column_mappings entry per bronze
+# column, snake_case target. The agent rewrites column_mappings based on the
+# OMOP target columns and the canonical example in SKILL.md.
+#
+# TODO(vocabulary_lookups): Add per the resolution decision tree (MANDATORY rule 3).
 # TODO(expectations): Add fail/drop/warn rules (e.g. PK NOT NULL, allowed concept sets).
 # TODO(joins): Add join blocks if multiple sources are required.
 """
@@ -238,8 +213,8 @@ def main() -> None:
 
     print(f"Wrote: {out_path.resolve()}")
     print(
-        "Next steps: Review the generated config, fill in TODO sections, "
-        "then run scripts/validate_omop.py after materializing the table."
+        "Next steps: rewrite column_mappings per the canonical example in SKILL.md, "
+        "add vocabulary_lookups, validate with scripts/validate_yaml_schema.py."
     )
 
 
