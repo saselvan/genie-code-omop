@@ -255,10 +255,81 @@ expectations:
 ```
 
 **Key rules:**
-- `vocabulary_lookups[].resolution` must be `source_to_concept_map` or `concept_table` — no custom strategies
+- `vocabulary_lookups[].resolution` must be `source_to_concept_map`, `concept_table`, or `concept_table_mapped`
 - `vocabulary_lookups[].source_alias` is **required** — must match an alias from `sources`
+- `vocabulary_lookups[].domain_id` is **required** for `concept_table` AND `concept_table_mapped` — always include it
 - `expectations.*[]` items are **objects** with `name` (stable ID for SDP telemetry) and `expr` (SQL boolean) — not plain strings
 - `sources[].table` uses `{catalog}` and `{bronze_schema}` placeholders — never hardcode catalog names
+
+## Canonical YAML example — fact table (concept_table_mapped)
+
+Use this template for clinical fact tables (condition, procedure, drug) where source codes need crosswalk to standard concepts. **Every fact table needs TWO vocabulary lookups per coded column** — one for the standard concept, one for the source concept:
+
+```yaml
+table_name: condition_occurrence
+target_schema: core_omop
+description: "OMOP CDM v5.4 condition_occurrence from pat_enc_dx."
+
+sources:
+  - alias: dx
+    table: "{catalog}.{bronze_schema}.pat_enc_dx"
+  - alias: enc
+    table: "{catalog}.{bronze_schema}.pat_enc"
+
+joins:
+  - left: dx
+    right: enc
+    type: left
+    condition: "dx.EncounterID = enc.EncounterID"
+
+vocabulary_lookups:
+  # Standard concept: ICD-10 → SNOMED via Maps to crosswalk
+  - source_alias: dx
+    source_column: DiagnosisCode
+    target_column: condition_concept_id
+    resolution: concept_table_mapped
+    vocabulary_id: ICD10CM
+    domain_id: Condition
+    fallback: 0
+  # Source concept: ICD-10 concept directly (non-standard, for traceability)
+  - source_alias: dx
+    source_column: DiagnosisCode
+    target_column: condition_source_concept_id
+    resolution: concept_table
+    vocabulary_id: ICD10CM
+    domain_id: Condition
+    standard_only: false
+    fallback: 0
+
+column_mappings:
+  # Include condition_concept_id in key for one-to-many fan-out safety
+  - target: condition_occurrence_id
+    expr: "ROW_NUMBER() OVER (ORDER BY dx.EncounterID, dx.DiagnosisCode, condition_concept_id)"
+  - target: person_id
+    expr: "CAST(enc.PatientID AS BIGINT)"
+  - target: condition_start_date
+    expr: "DATE(dx.DiagnosisDateTime)"
+  - target: condition_type_concept_id
+    expr: "32817"
+  - target: condition_source_value
+    expr: "dx.DiagnosisCode"
+
+expectations:
+  fail:
+    - name: valid_pk
+      expr: "condition_occurrence_id IS NOT NULL"
+    - name: valid_person
+      expr: "person_id IS NOT NULL"
+  warn:
+    - name: known_condition
+      expr: "condition_concept_id != 0"
+```
+
+**Key differences from person (dimension table):**
+- `concept_table_mapped` for the standard concept (ICD-10 is non-standard; SNOMED is standard)
+- `concept_table` with `standard_only: false` and `domain_id` for the source concept (traceability)
+- `domain_id` is **required on both lookups** — it filters one-to-many and satisfies Pydantic validation
+- Surrogate key includes `condition_concept_id` in ORDER BY for one-to-many fan-out safety
 
 ## Edge cases and known limitations
 
