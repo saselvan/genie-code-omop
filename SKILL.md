@@ -152,18 +152,30 @@ Fill in:
 
 Replace any hardcoded catalog/schema names with `{catalog}` and `{bronze_schema}` placeholders in `sources[].table`. The pipeline's `config_loader.py` substitutes these at runtime from Spark conf. See `configs/person.yaml` for the pattern.
 
-**BEFORE presenting the config to the user, validate it against the Pydantic schema:**
+**BEFORE presenting the config to the user, validate it against the Pydantic schema using `scripts/validate_yaml_schema.py` — the standalone validator that ships with this skill (no host-repo `cd` required):**
+
+The validator has two interchangeable surfaces. Use whichever fits your `executeCode` runtime.
+
+**Python (preferred — kernel survives across executeCode calls within a session):**
+
+```python
+import sys
+sys.path.insert(0, "/Workspace/.assistant/skills/omop-pipeline-builder/scripts")
+from validate_yaml_schema import validate
+cfg = validate("/Workspace/Users/<your_user>/configs/your_table.yaml")
+print(f"OK: {cfg.table_name}, {len(cfg.column_mappings)} columns, {len(cfg.vocabulary_lookups)} lookups")
+```
+
+The `sys.path.insert` literal `/Workspace/.assistant/skills/omop-pipeline-builder/scripts` is fixed thanks to workspace-scope deploy — the same path works for every user invoking the skill. The kernel persists across `executeCode` calls within a session, so `from validate_yaml_schema import validate` only pays the import cost once.
+
+**CLI (always-safe fallback):**
 
 ```bash
-cd <repo-root>
-python -c "
-import sys
-sys.path.insert(0, 'src')
-from config_loader import load_config
-cfg = load_config('configs/your_table.yaml')
-print(f'OK: {cfg.table_name}, {len(cfg.column_mappings)} columns, {len(cfg.vocabulary_lookups)} lookups')
-"
+python /Workspace/.assistant/skills/omop-pipeline-builder/scripts/validate_yaml_schema.py \
+  /Workspace/Users/<your_user>/configs/your_table.yaml
 ```
+
+Exit code 0 = valid; exit code 1 = invalid (errors printed to stderr).
 
 **If validation fails:** fix the YAML and re-validate. Repeat until it passes. Do not present to the user or produce any summary until 0 errors. Common fixes:
 - `vocabulary_lookups` must use `resolution: source_to_concept_map` or `resolution: concept_table` — not custom strategies like `case_map`. If a code set is small (< 10 values), use a CASE expression in `column_mappings` instead of a vocabulary lookup.
