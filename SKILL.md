@@ -5,11 +5,12 @@ license: MIT
 compatibility: Designed for Databricks Genie Code Agent mode launched from a notebook with a Python-capable cluster (serverless or classic). Genie Code launched from the catalog browser, a Genie Space, or the SQL editor is backed by a SQL warehouse and CANNOT run this skill's Step 4 Pydantic validator — see "Compute requirements" below. Requires databricks-sdk, pyyaml, pydantic. Run pipeline triggering uses Pipelines Editor native run when available, scripts/run_pipeline.py from notebooks.
 metadata:
   author: Samuel Selvan (Databricks SA)
-  version: "1.3"
+  version: "1.4"
   built_for_session: "2026-04-29 OMOP transform framework hands-on"
   v1_1_notes: "Vendor-neutralized; standalone YAML validator (no host-repo cd); workspace-scope deploy; canonical example flipped to fact-table shape."
   v1_2_notes: "STCM guidance reframed: source_to_concept_map UC table is the runtime source of truth; CSV seed at seed_data/source_to_concept_map_custom.csv is one of two write paths (alongside direct SQL/MERGE), not the only path. Added 'Adding source_to_concept_map mappings' section."
   v1_3_notes: "Compute requirements made explicit: skill requires a Python-capable notebook kernel; catalog browser / Genie Space / SQL editor surfaces (SQL warehouse compute) cannot run the Pydantic validator. Added 'Compute requirements' section. MANDATORY rule 2 now short-circuits with a verbatim user message instead of retrying when Python is unavailable."
+  v1_4_notes: "Path A canonical example switched from INSERT to MERGE INTO with composite key (source_code, source_vocabulary_id) — matches src/01_load_vocabulary.py's verb so framework is internally consistent on STCM writes; idempotent on re-runs. INSERT demoted to 'first-bootstrap-only' aside."
 ---
 
 # OMOP Pipeline Builder
@@ -401,17 +402,28 @@ There are two supported paths for adding rows. Pick based on who owns the mappin
 
 Write to the table via SQL. Works for one-off rows, scheduled MERGEs from upstream reference systems, and Lakeflow Connect ingestion. Mappings are governed by UC ACLs and audited like any other Delta table; updates take effect immediately without redeploying the pipeline.
 
+**Default to `MERGE INTO`, not `INSERT INTO`.** The same rows MERGE'd twice are a no-op; the same rows INSERT'd twice create duplicates. `src/01_load_vocabulary.py` (Path B) already uses MERGE on this table — keeping Path A on MERGE means the framework has one consistent verb for STCM writes, so muscle memory transfers between the two paths and between ad-hoc additions and scheduled jobs.
+
 ```sql
-INSERT INTO `{catalog}`.`{ref_schema}`.`source_to_concept_map`
-  (source_code, source_concept_id, source_vocabulary_id,
-   source_code_description, target_concept_id, target_vocabulary_id,
-   valid_start_date, valid_end_date, invalid_reason)
-VALUES
-  ('Heart Rate',          0, 'Flowsheet', 'Heart rate (LOINC 8867-4)',  3027018, 'LOINC', '1970-01-01', '2099-12-31', NULL),
-  ('Blood Pressure Systolic', 0, 'Flowsheet', 'Systolic BP (LOINC 8480-6)', 3004249, 'LOINC', '1970-01-01', '2099-12-31', NULL);
+MERGE INTO `{catalog}`.`{ref_schema}`.`source_to_concept_map` AS t
+USING (
+  VALUES
+    ('Heart Rate',              0, 'Flowsheet', 'Heart rate (LOINC 8867-4)',     3027018, 'LOINC', DATE'1970-01-01', DATE'2099-12-31', NULL),
+    ('Blood Pressure Systolic', 0, 'Flowsheet', 'Systolic BP (LOINC 8480-6)',    3004249, 'LOINC', DATE'1970-01-01', DATE'2099-12-31', NULL)
+) AS s (
+  source_code, source_concept_id, source_vocabulary_id,
+  source_code_description, target_concept_id, target_vocabulary_id,
+  valid_start_date, valid_end_date, invalid_reason
+)
+ON  t.source_code           = s.source_code
+AND t.source_vocabulary_id  = s.source_vocabulary_id
+WHEN MATCHED THEN UPDATE SET *
+WHEN NOT MATCHED THEN INSERT *;
 ```
 
-For ongoing maintenance, prefer `MERGE INTO` from a UC-table-shaped staging source so the upsert is idempotent.
+The composite key `(source_code, source_vocabulary_id)` is required: `source_code` alone is not unique across vocabularies (e.g., `'01'` may legitimately exist in both `Race` and `Ethnicity` vocabularies). Matching on `source_code` alone would silently overwrite cross-vocab rows. This is the same composite key `src/01_load_vocabulary.py` uses.
+
+`INSERT INTO ... VALUES (...)` is acceptable for the very first bootstrap of a brand-new vocabulary where no existing rows could collide — but the moment a re-run is conceivable (notebook re-execution, partial-failure recovery, scheduled top-up), use MERGE.
 
 **Path B — Git-tracked bootstrap CSV (recommended for small, stable, repo-shipped mappings):**
 
