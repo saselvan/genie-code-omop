@@ -93,7 +93,7 @@ def _guess_column_mappings(
                     {"target": "year_of_birth", "expr": f"YEAR(src.{c})"},
                     {"target": "month_of_birth", "expr": f"MONTH(src.{c})"},
                     {"target": "day_of_birth", "expr": f"DAY(src.{c})"},
-                    {"target": "birth_datetime", "expr": f"src.{c}"},
+                    {"target": "birth_datetime", "expr": f"CAST(src.{c} AS TIMESTAMP)"},
                 ]
             )
             continue

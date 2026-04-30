@@ -1,5 +1,7 @@
 # EHR source to OMOP CDM v5.4 — your organization mapping reference
 
+> **Note:** Source table names in this document follow Epic Clarity conventions. The mapping logic generalizes to other EHRs — substitute the equivalent source table for your platform.
+
 EHR source extracts for your organization land in bronze with **PascalCase** column names and no separators (for example `PatientID`, `AdmitDateTime`). On ingest, the companion **snake-case-column-renamer** skill can normalize names to `snake_case`; YAML configs must reference the **actual** bronze column names present in Unity Catalog.
 
 ## Table-level routing
@@ -97,7 +99,7 @@ EHR source extracts for your organization land in bronze with **PascalCase** col
 
 ## Semantic gotchas
 
-- **`visit_type_concept_id` is provenance, not visit kind.** Per OMOP, this field encodes how the visit record was captured (claims, EHR, registry, etc.). EHR source encounter rows from the EHR should use **`32817` — “EHR encounter record”** as a standard provenance literal. The clinical visit category belongs in **`visit_concept_id`** (Visit domain), not `visit_type_concept_id`.
+- **`visit_type_concept_id` is provenance, not visit kind.** Per OMOP, this field encodes how the visit record was captured (claims, EHR, registry, etc.). EHR source encounter rows from the EHR should use **`32817` — “EHR”** as a standard provenance literal. The clinical visit category belongs in **`visit_concept_id`** (Visit domain), not `visit_type_concept_id`.
 - **Diagnosis type vs condition status:** map EHR source “primary/secondary” style fields to **`condition_type_concept_id`** (Type Concept domain), not to visit type.
 - **Source concepts vs standard concepts:** retain `*_source_value` / `*_source_concept_id` alongside mapped standard `*_concept_id` fields for traceability.
 

@@ -1,7 +1,7 @@
 ---
 name: omop-pipeline-builder
-description: "Use when generating, validating, or running EHR-to-OMOP-CDM-v5.4 transformations. Triggers on Person, Visit_Occurrence, Condition_Occurrence, or other OMOP CDM v5.4 tables; EHR source tables (PATIENT, PAT_ENC, PAT_ENC_DX); YAML config authoring for omop-pipeline-builder; or vocabulary concept_id resolution."
-license: Proprietary
+description: "Use when scaffolding YAML transform configs from EHR bronze tables into OMOP CDM v5.4 silver, generating source_to_concept_map seed rows from distinct source codes, validating materialized OMOP silver tables (5-layer schema/PK/RI/domain/completeness checks), or wiring new OMOP tables into the resources/jobs.yml DAG. Triggers on YAML config authoring, vocabulary concept_id resolution strategy decisions (source_to_concept_map vs concept_table vs concept_table_mapped), or starting Spark Declarative Pipeline updates for specific OMOP tables."
+license: MIT
 compatibility: Designed for Databricks Genie Code Agent mode. Requires databricks-sdk, pyyaml, pydantic. Run pipeline triggering uses Pipelines Editor native run when available, scripts/run_pipeline.py from notebooks.
 metadata:
   author: Samuel Selvan (Databricks SA)
@@ -77,8 +77,6 @@ python scripts/generate_config.py \
 
 Requirements: `databricks-sdk`, `pyyaml`, a SQL warehouse ID (pass `--warehouse-id` or set `DATABRICKS_WAREHOUSE_ID`). The script writes a YAML stub matching the shared config schema (see `configs/_schema.yaml`) and prints the output path plus next steps.
 
-**Note:** The generator may include internal Spark columns like `_rescued_data` or `_metadata` in the output — remove these, they are not OMOP columns.
-
 ### Step 4 — Review, edit, and validate YAML
 
 Fill in:
@@ -92,10 +90,15 @@ Replace any hardcoded catalog/schema names with `{catalog}` and `{bronze_schema}
 
 **BEFORE presenting the config to the user, validate it against the Pydantic schema:**
 
-```python
+```bash
+cd <repo-root>
+python -c "
+import sys
+sys.path.insert(0, 'src')
 from config_loader import load_config
-cfg = load_config("configs/your_table.yaml")
-print(f"OK: {cfg.table_name}, {len(cfg.column_mappings)} columns, {len(cfg.vocabulary_lookups)} lookups")
+cfg = load_config('configs/your_table.yaml')
+print(f'OK: {cfg.table_name}, {len(cfg.column_mappings)} columns, {len(cfg.vocabulary_lookups)} lookups')
+"
 ```
 
 **If validation fails:** fix the YAML and re-validate. Repeat until it passes. Do not present to the user or produce any summary until 0 errors. Common fixes:
@@ -104,7 +107,7 @@ print(f"OK: {cfg.table_name}, {len(cfg.column_mappings)} columns, {len(cfg.vocab
 - `source_alias` is required on every vocabulary lookup — must match an alias from `sources`.
 - `sources[].table` must use `{catalog}` and `{bronze_schema}` placeholders — never hardcode catalog names.
 
-**Only after validation passes:** present the config using this completion format:
+**Only after validation passes:** present the config. The following is an example completion format — adapt to the surface (notebook, IDE, chat):
 
 ```
 Config validated: {table_name} — 0 errors
@@ -261,6 +264,8 @@ expectations:
 - `expectations.*[]` items are **objects** with `name` (stable ID for SDP telemetry) and `expr` (SQL boolean) — not plain strings
 - `sources[].table` uses `{catalog}` and `{bronze_schema}` placeholders — never hardcode catalog names
 
+Resolution order: `vocabulary_lookups` are evaluated before `column_mappings`, so `column_mappings` expressions may reference resolved `*_concept_id` columns by name (e.g., using `condition_concept_id` inside a surrogate key hash).
+
 ## Canonical YAML example — fact table (concept_table_mapped)
 
 Use this template for clinical fact tables (condition, procedure, drug) where source codes need crosswalk to standard concepts. **Every fact table needs TWO vocabulary lookups per coded column** — one for the standard concept, one for the source concept:
@@ -304,7 +309,7 @@ vocabulary_lookups:
 column_mappings:
   # Include condition_concept_id in key for one-to-many fan-out safety
   - target: condition_occurrence_id
-    expr: "ROW_NUMBER() OVER (ORDER BY dx.EncounterID, dx.DiagnosisCode, condition_concept_id)"
+    expr: "xxhash64(CONCAT_WS('|', CAST(dx.EncounterID AS STRING), dx.DiagnosisCode, CAST(condition_concept_id AS STRING)))"
   - target: person_id
     expr: "CAST(enc.PatientID AS BIGINT)"
   - target: condition_start_date
@@ -329,7 +334,92 @@ expectations:
 - `concept_table_mapped` for the standard concept (ICD-10 is non-standard; SNOMED is standard)
 - `concept_table` with `standard_only: false` and `domain_id` for the source concept (traceability)
 - `domain_id` is **required on both lookups** — it filters one-to-many and satisfies Pydantic validation
-- Surrogate key includes `condition_concept_id` in ORDER BY for one-to-many fan-out safety
+- Surrogate key includes `condition_concept_id` in the hash for one-to-many fan-out safety
+
+## Canonical YAML example — measurement (Maps to + Maps to unit)
+
+Use this template for measurement tables where the source vocabulary (e.g. LOINC) needs both a standard concept crosswalk and a unit concept crosswalk:
+
+```yaml
+table_name: measurement
+target_schema: core_omop
+description: "OMOP CDM v5.4 measurement from flowsheet_meas."
+
+sources:
+  - alias: fs
+    table: "{catalog}.{bronze_schema}.flowsheet_meas"
+  - alias: enc
+    table: "{catalog}.{bronze_schema}.pat_enc"
+
+joins:
+  - left: fs
+    right: enc
+    type: left
+    condition: "fs.EncounterID = enc.EncounterID"
+
+vocabulary_lookups:
+  # Standard concept: LOINC → standard Measurement concept via Maps to crosswalk
+  - source_alias: fs
+    source_column: MeasName
+    target_column: measurement_concept_id
+    resolution: concept_table_mapped
+    vocabulary_id: LOINC
+    domain_id: Measurement
+    fallback: 0
+  # Unit concept: LOINC → UCUM unit via Maps to unit crosswalk
+  - source_alias: fs
+    source_column: MeasName
+    target_column: unit_concept_id
+    resolution: concept_table_mapped
+    vocabulary_id: LOINC
+    relationship_id: "Maps to unit"
+    domain_id: Unit
+    fallback: 0
+  # Source concept: LOINC concept directly (non-standard, for traceability)
+  - source_alias: fs
+    source_column: MeasName
+    target_column: measurement_source_concept_id
+    resolution: concept_table
+    vocabulary_id: LOINC
+    domain_id: Measurement
+    standard_only: false
+    fallback: 0
+
+column_mappings:
+  - target: measurement_id
+    expr: "xxhash64(CONCAT_WS('|', CAST(fs.MeasID AS STRING), CAST(measurement_concept_id AS STRING)))"
+  - target: person_id
+    expr: "CAST(enc.PatientID AS BIGINT)"
+  - target: measurement_date
+    expr: "DATE(fs.MeasDateTime)"
+  - target: measurement_datetime
+    expr: "fs.MeasDateTime"
+  - target: measurement_type_concept_id
+    expr: "32817"
+  - target: value_as_number
+    expr: "CAST(fs.MeasValue AS DOUBLE)"
+  - target: measurement_source_value
+    expr: "fs.MeasName"
+
+expectations:
+  fail:
+    - name: valid_pk
+      expr: "measurement_id IS NOT NULL"
+    - name: valid_person
+      expr: "person_id IS NOT NULL"
+  warn:
+    - name: known_measurement
+      expr: "measurement_concept_id != 0"
+    - name: has_value
+      expr: "value_as_number IS NOT NULL"
+```
+
+**Key differences from condition_occurrence:**
+- `concept_table_mapped` with default `relationship_id` ("Maps to") for the standard measurement concept
+- `concept_table_mapped` with `relationship_id: "Maps to unit"` for `unit_concept_id` (resolves LOINC to UCUM unit concepts)
+- `concept_table` with `standard_only: false` for `measurement_source_concept_id` (traceability)
+- `value_as_number` uses safe `CAST(... AS DOUBLE)` — source values may contain non-numeric strings that will produce NULL
+- xxhash64-based surrogate key includes `measurement_concept_id` for fan-out safety
 
 ## Edge cases and known limitations
 
@@ -345,13 +435,15 @@ expectations:
   Cross-domain targets (e.g., Observation-domain targets from an ICD-10 code) are filtered out by `domain_id` and should be picked up when building the `observation` table.
 - **`*_source_concept_id` columns.** Use `resolution: concept_table` with `standard_only: false` to store the non-standard source concept. Use `resolution: concept_table_mapped` with `standard_only: true` (default) for the standard `*_concept_id` column. Both lookups use the same source column but produce different concept_ids.
 - **`relationship_id` for measurement.** The default “Maps to” works for condition/procedure/drug. For measurement, also consider `relationship_id: “Maps to unit”` (resolves LOINC → UCUM unit) and `relationship_id: “Maps to value”` (resolves LOINC → categorical value concepts).
-- **`visit_type_concept_id` is not visit kind.** In OMOP it records **provenance** (how the visit row was captured). For EHR source/EHR encounter rows, use concept **32817** (“EHR encounter record”). Clinical visit type belongs in `visit_concept_id`.
+- **`visit_type_concept_id` is not visit kind.** In OMOP it records **provenance** (how the visit row was captured). For EHR source/EHR encounter rows, use concept **32817** (“EHR”). Clinical visit type belongs in `visit_concept_id`.
 - **Vocabulary lookups for non-trivial codes:** codes that do not exist as `concept_code` in the right `vocabulary_id` need `source_to_concept_map`, cross-vocabulary relationships (`Maps to`), or manual OHDSI workflow—not a bare string match on `concept` alone.
 - **`generate_config.py` heuristics** are guesses from column names; joins, vocab, and expectations always need human review.
 - **`validate_omop.py` domain checks** cover common `*_concept_id` columns listed in the reference spec; exotic columns may need extending the spec or script.
 - **CPT4** is often missing until Athena CPT4 license steps complete; validation against procedure concepts may show gaps until vocab is complete.
 - **Statement execution** requires a running SQL warehouse; large `DISTINCT` scans in `generate_source_mappings.py` can be expensive on wide bronze tables—filter early if needed.
 - **Pipeline parameters** must match how your SDP code reads `spark.conf` (for example `table_name`); mismatches cause the wrong flow or missing config path.
+- **Surrogate key stability under full_refresh.** OMOP rebuilds are batch snapshots. `ROW_NUMBER() OVER (ORDER BY ...)` produces unstable keys across runs because row ordering is non-deterministic when the source data changes (inserts, deletes, late-arriving records). Hash-based keys like `xxhash64(CONCAT_WS('|', ...))` are deterministic and idempotent — the same input always produces the same key regardless of rebuild timing. Additionally, `ROW_NUMBER` requires a single-reducer global sort, which does not scale on large fact tables. Prefer `xxhash64` for all OMOP surrogate keys.
+- **Fact tables need two vocabulary lookups.** Pydantic does not enforce that fact tables include both `*_concept_id` and `*_source_concept_id` lookups. The agent must include both. The standard lookup (`concept_table_mapped`) resolves to the OMOP standard concept; the source lookup (`concept_table` with `standard_only: false`) preserves the original non-standard concept for traceability. Only having the standard lookup loses traceability back to the source vocabulary.
 
 ## Healthcare / OMOP tokens
 

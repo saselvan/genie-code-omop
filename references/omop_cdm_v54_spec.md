@@ -14,7 +14,6 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | month_of_birth | INT | Y | N | | |
 | day_of_birth | INT | Y | N | | |
 | birth_datetime | TIMESTAMP | Y | N | | |
-| death_datetime | TIMESTAMP | Y | N | | |
 | race_concept_id | INT | N | N | concept.concept_id | Race |
 | ethnicity_concept_id | INT | N | N | concept.concept_id | Ethnicity |
 | location_id | BIGINT | Y | N | | |
@@ -90,6 +89,8 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | procedure_concept_id | INT | N | N | concept.concept_id | Procedure |
 | procedure_date | DATE | N | N | | |
 | procedure_datetime | TIMESTAMP | Y | N | | |
+| procedure_end_date | DATE | Y | N | | |
+| procedure_end_datetime | TIMESTAMP | Y | N | | |
 | procedure_type_concept_id | INT | N | N | concept.concept_id | Type Concept |
 | modifier_concept_id | INT | Y | N | concept.concept_id | Procedure |
 | quantity | INT | Y | N | | |
