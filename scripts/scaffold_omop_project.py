@@ -275,7 +275,22 @@ def _copy_template_tree(src: Path, dst: Path) -> int:
     exist. Idempotent at the directory level: copying twice into the same dst
     overwrites cleanly.
     """
-    raise NotImplementedError("implemented in step 2")
+    if not src.exists():
+        raise FileNotFoundError(
+            f"Templates directory not found: {src}. "
+            "Run Phase 1 of the v1.6 build first."
+        )
+    dst.mkdir(parents=True, exist_ok=True)
+    count = 0
+    for path in src.rglob("*"):
+        if path.is_dir():
+            continue
+        rel = path.relative_to(src)
+        out = dst / rel
+        out.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, out)
+        count += 1
+    return count
 
 
 def _write_templated_files(
@@ -287,7 +302,22 @@ def _write_templated_files(
     detection_skipped_reason: str | None,
 ) -> int:
     """Write databricks.yml + README.md to target/, returning 2."""
-    raise NotImplementedError("implemented in step 2")
+    databricks_yml = _render_databricks_yml(
+        bundle_target=bundle_target,
+        silver_target=silver_target,
+        project_name=project_name,
+    )
+    (target / "databricks.yml").write_text(databricks_yml, encoding="utf-8")
+
+    readme = _render_readme(
+        project_name=project_name,
+        bundle_target=bundle_target,
+        silver_target=silver_target,
+        existing_tables=existing_tables,
+        detection_skipped_reason=detection_skipped_reason,
+    )
+    (target / "README.md").write_text(readme, encoding="utf-8")
+    return 2
 
 
 def _template_catalog_in_load_vocabulary(target_dir: Path, catalog: str) -> int:
@@ -300,7 +330,15 @@ def _template_catalog_in_load_vocabulary(target_dir: Path, catalog: str) -> int:
     0 if the placeholder was absent (drift-safety: source template may have
     evolved).
     """
-    raise NotImplementedError("implemented in step 2")
+    target_file = target_dir / "src" / "01_load_vocabulary.py"
+    if not target_file.exists():
+        return 0
+    content = target_file.read_text(encoding="utf-8")
+    if "your_catalog" not in content:
+        return 0
+    new_content = content.replace("your_catalog", catalog)
+    target_file.write_text(new_content, encoding="utf-8")
+    return 1
 
 
 def _cli() -> None:
