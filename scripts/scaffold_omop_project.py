@@ -258,14 +258,53 @@ def _verify_volume_exists(bundle_target: str, profile: str | None = None) -> Non
     "doesn't exist" and "exists but you can't see it" — both require the
     customer to take action through UC governance.
     """
-    raise NotImplementedError("implemented in step 3")
+    parts = bundle_target.split(".")
+    if len(parts) != 3:
+        raise ValueError(
+            f"bundle_target must be three-part catalog.schema.volume, "
+            f"got: {bundle_target}"
+        )
+    full_volume_name = bundle_target
+
+    try:
+        w = WorkspaceClient(profile=profile)
+    except Exception as e:
+        raise VolumeNotFoundError(
+            bundle_target=bundle_target,
+            underlying_reason=f"Databricks SDK auth failed: {type(e).__name__}: {e}",
+        ) from e
+
+    try:
+        w.volumes.read(name=full_volume_name)
+    except Exception as e:
+        raise VolumeNotFoundError(
+            bundle_target=bundle_target,
+            underlying_reason=f"{type(e).__name__}: {e}",
+        ) from e
 
 
 def _probe_existing_tables(
     silver_target: str, profile: str | None = None
 ) -> tuple[list[str], str | None]:
     """Best-effort probe. Returns ([], reason) on any failure."""
-    raise NotImplementedError("implemented in step 3")
+    parts = silver_target.split(".")
+    if len(parts) != 2:
+        return [], f"silver_target must be catalog.schema, got: {silver_target}"
+    catalog, schema = parts
+
+    try:
+        w = WorkspaceClient(profile=profile)
+    except Exception as e:
+        return [], f"SDK auth failed: {type(e).__name__}: {e}"
+
+    try:
+        tables = list(w.tables.list(catalog_name=catalog, schema_name=schema))
+        return [t.name for t in tables if t.name], None
+    except Exception as e:
+        return (
+            [],
+            f"Could not list tables in {silver_target}: {type(e).__name__}: {e}",
+        )
 
 
 def _copy_template_tree(src: Path, dst: Path) -> int:
