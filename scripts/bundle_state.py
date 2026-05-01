@@ -25,6 +25,8 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from _workspace_probes import _probe_silver_tables as _probe_silver_via_helper
+
 _MARKER_FILENAME = ".omop-skill-version"
 
 # Per-call timeout for individual git subprocess invocations. Generous
@@ -159,13 +161,14 @@ def _read_skill_version(project_path: Path) -> str | None:
 def _probe_silver_tables(
     core_target: str | None, profile: str | None = None
 ) -> tuple[list[str], str | None]:
-    """STUB — implemented in Phase 1 Step 2.
+    """List tables in ``<core_target>``. Best-effort.
 
-    Will list tables in ``<core_target>`` using SDK, falling back to Spark
-    SQL when the SDK auth fails. Same opaque ``([], skip_reason)`` contract
-    as ``_probe_existing_tables``.
+    Thin re-export of the shared probe in ``_workspace_probes``. The
+    indirection is intentional: ``read_bundle_state`` patches this name on
+    the ``bundle_state`` module in tests, while production code uses the
+    same SDK-then-Spark fallback as the scaffolder probe.
     """
-    raise NotImplementedError("step 2: _probe_silver_tables")
+    return _probe_silver_via_helper(core_target, profile)
 
 
 def _run_git(project_path: str, *args: str) -> subprocess.CompletedProcess[str]:
@@ -278,5 +281,111 @@ def read_bundle_state(
     probe_git: bool = True,
     previous_silver_tables: list[str] | None = None,
 ) -> BundleState:
-    """STUB — implemented in Phase 1 Step 4."""
-    raise NotImplementedError("step 4: read_bundle_state")
+    """Read the current state of an OMOP project bundle from disk.
+
+    Returns structured state describing what configs exist, what tasks
+    are wired into ``jobs.yml``, what tables exist in ``core_target``, and
+    what Git status the project tree is in. Reads ``.omop-skill-version``
+    if present.
+
+    If ``previous_silver_tables`` is provided, populates
+    ``materialization_diff`` with newly-appearing tables (tables in the
+    current probe result that were not in the previous list).
+
+    Best-effort: any probe (silver, git) that fails returns a populated
+    skip_reason in the result; the function never raises for missing
+    data. Raises ``ValueError`` only for ``project_path`` that doesn't
+    exist or isn't a directory.
+
+    Decision 7: re-reads from disk on every call. No caching.
+    """
+    project = Path(project_path)
+    if not project.exists():
+        raise ValueError(f"project_path does not exist: {project_path}")
+    if not project.is_dir():
+        raise ValueError(f"project_path is not a directory: {project_path}")
+
+    scaffold_version = _read_skill_version(project)
+    configs_present, ambiguous_configs = _list_yaml_configs(project / "configs")
+    tasks_wired, tasks_commented = _parse_jobs_yml_tasks(
+        project / "resources" / "jobs.yml"
+    )
+
+    silver_tables, silver_skip_reason = _read_silver_section(
+        core_target=core_target,
+        profile=profile,
+        probe_silver=probe_silver,
+    )
+
+    materialization_diff = _compute_materialization_diff(
+        current=silver_tables,
+        previous=previous_silver_tables,
+        silver_skip_reason=silver_skip_reason,
+    )
+
+    git_status, git_skip_reason = _read_git_section(
+        project_path=str(project),
+        probe_git=probe_git,
+    )
+
+    return BundleState(
+        project_path=str(project),
+        scaffold_version=scaffold_version,
+        configs_present=configs_present,
+        ambiguous_configs=ambiguous_configs,
+        tasks_wired=tasks_wired,
+        tasks_commented=tasks_commented,
+        silver_tables=silver_tables,
+        silver_skip_reason=silver_skip_reason,
+        materialization_diff=materialization_diff,
+        git_status=git_status,
+        git_skip_reason=git_skip_reason,
+    )
+
+
+def _read_silver_section(
+    *, core_target: str | None, profile: str | None, probe_silver: bool
+) -> tuple[list[str], str | None]:
+    """Resolve the silver-probe section of a bundle-state read.
+
+    Precedence:
+      1. ``probe_silver=False`` → return ``([], "skipped: probe_silver=False")``
+         regardless of ``core_target``.
+      2. ``core_target=None`` → return ``([], "skipped: no core_target provided")``
+         (no SDK call attempted).
+      3. Otherwise call the shared probe and surface its result verbatim.
+    """
+    if not probe_silver:
+        return [], "skipped: probe_silver=False"
+    if core_target is None:
+        return [], "skipped: no core_target provided"
+    return _probe_silver_tables(core_target, profile)
+
+
+def _read_git_section(
+    *, project_path: str, probe_git: bool
+) -> tuple[GitStatus, str | None]:
+    """Resolve the git-probe section of a bundle-state read."""
+    if not probe_git:
+        return GitStatus(is_git_repo=False), "skipped: probe_git=False"
+    return _probe_git_status(project_path)
+
+
+def _compute_materialization_diff(
+    *,
+    current: list[str],
+    previous: list[str] | None,
+    silver_skip_reason: str | None,
+) -> list[str] | None:
+    """Compute newly-materialized tables since a previous probe.
+
+    Returns ``None`` when ``previous`` is None (caller didn't supply a
+    baseline) or when the silver probe was skipped/failed (current view
+    is unreliable, so a diff would be misleading). Otherwise returns the
+    sorted set difference ``current - previous``.
+    """
+    if previous is None:
+        return None
+    if silver_skip_reason is not None:
+        return None
+    return sorted(set(current) - set(previous))
