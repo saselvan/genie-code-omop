@@ -459,7 +459,7 @@ WHERE c.vocabulary_id = 'ICD10CM' AND c.concept_code = 'E11.9'
 -- Expected: SNOMED concept 201826 (Type 2 diabetes mellitus)
 ```
 
-**Tested against:** OHDSI vocabulary on FEVM workspace (100K ICD-10 concepts, 7.3M Maps-to relationships). E11.9, I10, J45.909, M54.5 all resolve correctly 1:1. T44.8X2D resolves to 3 Condition + 1 Observation (domain-filtered correctly).
+**Reference behavior:** With a fully-loaded OHDSI vocabulary (~100K ICD-10 concepts, ~7.3M Maps-to relationships), single-code lookups like E11.9, I10, J45.909, M54.5 resolve 1:1 to a single SNOMED concept. Codes that map to multiple domains (e.g., T44.8X2D → 3 Condition + 1 Observation) are correctly filtered by `domain_id` to land in the right OMOP table.
 
 ### 5.6 How to Check if Your Codes Exist in OHDSI
 

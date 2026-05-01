@@ -9,16 +9,16 @@
 # COMMAND ----------
 
 # Databricks notebook source
-dbutils.widgets.text("catalog", "samuels_fevm_catalog", "catalog")
+dbutils.widgets.text("catalog", "your_catalog", "catalog")
 dbutils.widgets.text("ref_schema", "reference", "ref_schema")
 dbutils.widgets.text(
     "vocab_volume_path",
-    "/Volumes/samuels_fevm_catalog/reference/vocabulary_files",
+    "/Volumes/your_catalog/reference/vocabulary_files",
     "vocab_volume_path",
 )
 dbutils.widgets.text(
     "custom_seed_csv",
-    "/Volumes/samuels_fevm_catalog/reference/vocabulary_files/source_to_concept_map_custom.csv",
+    "/Volumes/your_catalog/reference/vocabulary_files/source_to_concept_map_custom.csv",
     "custom_seed_csv",
 )
 dbutils.widgets.text(
