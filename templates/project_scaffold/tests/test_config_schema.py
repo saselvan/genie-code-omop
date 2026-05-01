@@ -1,4 +1,21 @@
-"""Validate all configs/*.yaml against OMOPConfig and cross-field consistency rules."""
+"""Validate all configs/*.yaml against OMOPConfig and cross-field consistency rules.
+
+Phase 4 CI pipelines (GitHub Actions, Azure DevOps) run this test against the
+scaffolded project on every PR. Out-of-the-box behavior on a fresh scaffold:
+
+  - configs/ contains only `_schema.yaml` (which is excluded — see SKIP_FILES).
+  - test_template_health below ensures pytest collects at least one test and
+    exits 0, so the Phase 4 CI snippet succeeds immediately after scaffold.
+  - As you commit configs/<table>.yaml files, test_config_validates picks them
+    up automatically via the parametrize collection.
+
+Skipping configs:
+  - Add literal filenames to SKIP_FILES (e.g., a frozen reference config kept
+    for documentation but intentionally non-conformant).
+  - Or prefix the filename with `_` (underscore) — picked up by the
+    `not p.name.startswith("_")` rule below. Use this for smoke / scratch
+    configs (e.g., `_smoke_person.yaml`).
+"""
 
 from pathlib import Path
 
@@ -7,12 +24,8 @@ from config_loader import load_config
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
 
-SKIP_FILES = {
+SKIP_FILES: set[str] = {
     "_schema.yaml",
-    # Verbatim Genie Code output kept as a demo artifact — intentionally does
-    # NOT conform to the Pydantic schema. See .evidence/day4/step4_schema_validation.md
-    # for the 14 validation errors and why they illustrate a useful teaching moment.
-    "visit_occurrence_genie.yaml",
 }
 
 CONFIG_FILES = [
@@ -20,6 +33,14 @@ CONFIG_FILES = [
     for p in sorted(CONFIG_DIR.glob("*.yaml"))
     if p.name not in SKIP_FILES and not p.name.startswith("_")
 ]
+
+
+def test_template_health() -> None:
+    """Smoke check that always passes. Guarantees pytest collects ≥1 test, so
+    `pytest tests/test_config_schema.py` exits 0 even when configs/ is empty
+    (e.g., immediately after scaffold). Phase 4 CI snippets rely on this.
+    """
+    assert CONFIG_DIR.exists(), f"configs/ missing at {CONFIG_DIR}"
 
 
 @pytest.mark.parametrize("config_path", CONFIG_FILES)
