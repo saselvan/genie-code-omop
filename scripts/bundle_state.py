@@ -21,10 +21,16 @@ Auth is handled by Databricks runtime when invoked from Genie Code Agent.
 from __future__ import annotations
 
 import re
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
 _MARKER_FILENAME = ".omop-skill-version"
+
+# Per-call timeout for individual git subprocess invocations. Generous
+# enough for slow filesystems (UC Volume mounts) while still bounding the
+# bundle-state read to a few seconds in the worst case.
+_GIT_TIMEOUT_SECONDS = 10
 
 _WIRED_TASK_RE = re.compile(r"^\s*-\s*task_key:\s+([A-Za-z0-9_]+)")
 _COMMENTED_TASK_RE = re.compile(r"^\s*#\s*-\s*task_key:\s+([A-Za-z0-9_]+)")
@@ -162,14 +168,106 @@ def _probe_silver_tables(
     raise NotImplementedError("step 2: _probe_silver_tables")
 
 
-def _probe_git_status(project_path: str) -> tuple[GitStatus, str | None]:
-    """STUB — implemented in Phase 1 Step 3.
+def _run_git(project_path: str, *args: str) -> subprocess.CompletedProcess[str]:
+    """Run ``git -C <project_path> <args...>`` with text capture and timeout.
 
-    Will run ``git -C <path> rev-parse --is-inside-work-tree`` then
-    ``--abbrev-ref HEAD`` and ``status --porcelain``. Best-effort; never
-    raises.
+    Caller wraps in try/except for ``FileNotFoundError`` (no git installed)
+    and ``subprocess.TimeoutExpired``. Other failures (non-zero exit) are
+    surfaced via ``CompletedProcess.returncode``; the helper does not raise
+    on non-zero exit so the caller can branch deterministically.
     """
-    raise NotImplementedError("step 3: _probe_git_status")
+    return subprocess.run(  # noqa: S603,S607  (intentional, args are static)
+        ["git", "-C", project_path, *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=_GIT_TIMEOUT_SECONDS,
+    )
+
+
+def _probe_git_status(project_path: str) -> tuple[GitStatus, str | None]:
+    """Best-effort Git status probe. Three subprocess calls, never raises.
+
+    Steps:
+      1. ``git rev-parse --is-inside-work-tree`` — am I in a repo?
+      2. ``git rev-parse --abbrev-ref HEAD`` — what branch? (returns
+         literal ``HEAD`` for detached-HEAD state)
+      3. ``git status --porcelain`` — count untracked vs modified
+
+    On success returns ``(GitStatus(...), None)``. On any failure (no git
+    binary, non-repo path, timeout, etc.) returns ``(GitStatus(...defaults),
+    reason)`` so the caller can include the skip reason in the bundle
+    state without losing the structured shape.
+    """
+    try:
+        is_repo_proc = _run_git(project_path, "rev-parse", "--is-inside-work-tree")
+    except FileNotFoundError:
+        return GitStatus(is_git_repo=False), "git command not found"
+    except subprocess.TimeoutExpired:
+        return GitStatus(is_git_repo=False), "git command timed out"
+    except OSError as e:
+        return GitStatus(is_git_repo=False), f"git invocation failed: {type(e).__name__}: {e}"
+
+    if is_repo_proc.returncode != 0:
+        return GitStatus(is_git_repo=False), "Not a git repository"
+
+    try:
+        branch_proc = _run_git(project_path, "rev-parse", "--abbrev-ref", "HEAD")
+        status_proc = _run_git(project_path, "status", "--porcelain")
+    except subprocess.TimeoutExpired:
+        return (
+            GitStatus(is_git_repo=True),
+            "git rev-parse/status timed out",
+        )
+
+    if branch_proc.returncode != 0:
+        return (
+            GitStatus(is_git_repo=True),
+            f"git rev-parse failed: {branch_proc.stderr.strip()}",
+        )
+
+    branch = branch_proc.stdout.strip() or None
+
+    if status_proc.returncode != 0:
+        return (
+            GitStatus(is_git_repo=True, branch=branch),
+            f"git status failed: {status_proc.stderr.strip()}",
+        )
+
+    untracked, modified = _count_porcelain_lines(status_proc.stdout)
+    has_changes = (untracked + modified) > 0
+
+    return (
+        GitStatus(
+            is_git_repo=True,
+            branch=branch,
+            has_uncommitted_changes=has_changes,
+            untracked_count=untracked,
+            modified_count=modified,
+        ),
+        None,
+    )
+
+
+def _count_porcelain_lines(porcelain: str) -> tuple[int, int]:
+    """Count untracked vs modified lines from ``git status --porcelain`` output.
+
+    Format: each non-empty line is two columns of status code followed by a
+    space and the path. ``??`` = untracked; anything else (``M``, `` M``,
+    ``A``, ``MM``, ``R``, ``C``, etc.) is counted as modified. Don't
+    over-parse — counts are sufficient for the agent's "is this tree
+    clean?" decision.
+    """
+    untracked = 0
+    modified = 0
+    for line in porcelain.splitlines():
+        if not line:
+            continue
+        if line.startswith("??"):
+            untracked += 1
+        else:
+            modified += 1
+    return untracked, modified
 
 
 def read_bundle_state(
