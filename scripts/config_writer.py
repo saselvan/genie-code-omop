@@ -16,7 +16,7 @@ Step 3) but never blocks the write.
 Decision 11: agent writes, engineer commits. The writer does not
 ``git add`` or ``git commit``.
 
-This file ships the Step 1 + 2 + 3 surface:
+This file ships the Step 1 + 2 + 3 + 4 surface:
   - greenfield write (file does not exist)
   - bytes-for-bytes preservation
   - overwrite handling (FileExistsError when ``overwrite=False``,
@@ -26,10 +26,16 @@ This file ships the Step 1 + 2 + 3 surface:
   - Git status surfacing in ``WriteResult.git_warning``: ``None`` for
     git'd projects, honest Decision-10 text for non-Git'd projects,
     "version-control state unknown" for probe failures
-  - ``WriteResult.mtime_warning`` is still a placeholder (Step 4)
-
-``expected_mtime`` concurrency checking (Step 4) is added by the
-next commit in this phase.
+  - **Stable-mode** ``expected_mtime`` concurrency check: when the
+    caller passes ``expected_mtime``, the writer raises
+    :class:`MtimeMismatchError` if the on-disk mtime differs (or the
+    target file is gone). Stable mode is the option (b) branch from
+    Phase 0a's FUSE spike; the unstable-mode informational-warning
+    branch is not shipped because Phase 0a's spike concluded the
+    Volume FUSE mtime is stable enough to block on.
+  - ``WriteResult.mtime_warning`` stays ``None`` in stable mode and
+    exists only as a forward-compatible field for future builds that
+    might run against an unstable FUSE mount.
 
 Auth boilerplate not applicable (pure filesystem; no SDK calls).
 """
@@ -73,29 +79,83 @@ _GIT_WARNING_NOT_A_REPO = (
 )
 
 
+# Mtime comparison tolerance, in seconds. Real concurrent writes
+# advance mtime by milliseconds-to-seconds; this tolerance only
+# absorbs the float-precision loss that happens when the caller
+# round-trips ``expected_mtime`` through JSON or a database column
+# whose precision is lower than ``os.stat().st_mtime``'s nanosecond
+# representation. 1 microsecond is well below any realistic write
+# spacing on a Volume FUSE mount per Phase 0a's spike.
+_MTIME_TOLERANCE_SECONDS = 1e-6
+
+
+class MtimeMismatchError(Exception):
+    """Raised when the on-disk mtime differs from the caller's expectation.
+
+    Stable-mode concurrency guard. The caller (typically the agent
+    after reading the bundle state) passes the mtime they observed
+    for the target config. ``write_config`` re-stats the file just
+    before writing; if the mtime advanced (someone else wrote to the
+    file) or the file is gone (someone deleted it), the writer
+    refuses to overwrite and raises this exception.
+
+    The exception carries structured fields the agent's prompt
+    template can use to compose a "concurrent edit detected" message
+    without parsing the string representation:
+
+      - ``target_path``: the absolute path of the contested file
+      - ``expected_mtime``: what the caller passed in
+      - ``actual_mtime``: what the file currently shows, or ``None``
+        if the target was deleted between read and write
+
+    The write itself never starts when this is raised — the file on
+    disk remains byte-for-byte unchanged.
+    """
+
+    def __init__(
+        self,
+        target_path: str,
+        expected_mtime: float,
+        actual_mtime: float | None,
+    ) -> None:
+        self.target_path = target_path
+        self.expected_mtime = expected_mtime
+        self.actual_mtime = actual_mtime
+        if actual_mtime is None:
+            actual_repr = "file does not exist"
+        else:
+            actual_repr = f"{actual_mtime:.9f}"
+        message = (
+            f"Mtime mismatch on {target_path}: expected "
+            f"{expected_mtime:.9f}, got {actual_repr}. "
+            "Another writer modified or removed the config since you "
+            "read it. Re-read the bundle state before retrying."
+        )
+        super().__init__(message)
+
+
 @dataclass
 class WriteResult:
     """Result of a successful :func:`write_config` invocation.
 
     Returned for every successful write — the writer never raises on
-    informational concerns (Git status, mtime drift in unstable mode).
-    Phase 3 Steps 3 + 4 populate the warning fields; Step 1 leaves them
-    as ``None``.
+    informational concerns (Git status). Step 4 in stable mode raises
+    :class:`MtimeMismatchError` instead of populating
+    ``mtime_warning``; the warning field is preserved for forward
+    compatibility with a future unstable-mode build.
 
     Fields:
         config_path: Absolute path of the file that was written.
         bytes_written: Number of bytes the new file contains.
         overwrote_existing: True if a pre-existing file was replaced.
-            False for greenfield writes. Step 1 always returns False
-            (overwrite handling lands in Step 2).
+            False for greenfield writes.
         git_warning: Informational text surfaced to the agent's response
             template when the project isn't under git version control.
             Never blocks the write. Populated by Step 3.
-        mtime_warning: Informational text surfaced when ``expected_mtime``
-            was provided AND the Phase 0a FUSE mtime spike concluded
-            mtime is unstable. In stable mode (which this build ships
-            per Phase 0a's SESSION-STATE entry), mtime mismatches raise
-            :class:`MtimeMismatchError` instead. Populated by Step 4.
+        mtime_warning: Forward-compatibility field for future
+            unstable-mode builds. Always ``None`` in this build per
+            Phase 0a's FUSE-stable conclusion; mtime mismatches in
+            stable mode raise :class:`MtimeMismatchError`.
     """
 
     config_path: str
@@ -139,11 +199,16 @@ def write_config(
       POSIX — partial-write failures cannot corrupt the original.
       On any exception during temp-write or replace, the temp file
       is best-effort removed so no orphan ``.tmp`` remains on disk.
-    - **Concurrency model: last-write-wins.** The writer does not
-      coordinate with concurrent writers. Phase 3 Step 4 adds
-      optional ``expected_mtime`` checking that turns a concurrent
-      modification into a :class:`MtimeMismatchError` instead of a
-      silent overwrite — but only when the caller opts in.
+    - **Stable-mode concurrency guard.** When the caller passes
+      ``expected_mtime``, the writer stats the target file BEFORE
+      any side effect; if the actual mtime differs from
+      ``expected_mtime`` (modulo a 1 microsecond float-precision
+      tolerance), or the target file is gone, raises
+      :class:`MtimeMismatchError` and leaves the disk byte-for-byte
+      unchanged. ``expected_mtime=None`` (the default) skips the
+      check — used by Generate (greenfield) and Replace
+      (regenerate-from-scratch) sub-paths. The Update sub-path
+      passes the mtime it read from :func:`bundle_state.read_bundle_state`.
     - **Git status surfacing.** AFTER the write succeeds, runs a
       best-effort ``git status`` probe. If the project is under git,
       ``WriteResult.git_warning`` stays ``None`` — the freshly-written
@@ -153,13 +218,6 @@ def write_config(
       the alternative. If the probe itself fails (no git binary,
       timeout, etc.), sets a "version-control state unknown" message
       that names the underlying reason.
-
-    **Future-step surface (NOT IMPLEMENTED IN STEP 3):**
-
-    - ``expected_mtime``: Step 4 — gated on Phase 0a's FUSE spike
-      result (this build ships in **STABLE** mode per Phase 0a's
-      SESSION-STATE entry). Will raise :class:`MtimeMismatchError` on
-      drift. Currently accepted but unused.
 
     **Platform notes:**
 
@@ -181,17 +239,28 @@ def write_config(
         overwrite: When True, replaces an existing target file
             atomically. When False (default), an existing target file
             causes :class:`FileExistsError`.
-        expected_mtime: Reserved for Step 4. Currently unused.
+        expected_mtime: Concurrency guard. When non-None, the writer
+            stats the target file before writing and raises
+            :class:`MtimeMismatchError` if the on-disk mtime differs
+            (or the target is gone). When None (default), skips the
+            check — used by Generate (greenfield) and Replace
+            (regenerate-from-scratch) sub-paths. Compare uses a
+            1 microsecond float-precision tolerance to absorb JSON /
+            DB round-trip loss.
 
     Returns:
         :class:`WriteResult` describing the write. ``overwrote_existing``
         is True iff ``overwrite=True`` and the target file existed
         before the write. ``git_warning`` is populated per the rules in
-        :func:`_resolve_git_warning`.
+        :func:`_resolve_git_warning`. ``mtime_warning`` is always None
+        in this build (stable-mode mtime drift raises instead).
 
     Raises:
         ValueError: ``target_table`` does not match the canonical regex.
         FileExistsError: target file exists and ``overwrite=False``.
+        MtimeMismatchError: ``expected_mtime`` is set AND the on-disk
+            mtime differs by more than 1 microsecond, OR the target
+            file no longer exists. Disk is unchanged when this raises.
     """
     if not _TARGET_TABLE_RE.match(target_table):
         raise ValueError(
@@ -200,9 +269,19 @@ def write_config(
         )
 
     configs_dir = Path(project_path) / "configs"
-    configs_dir.mkdir(parents=True, exist_ok=True)
-
     target_path = configs_dir / f"{target_table}.yaml"
+
+    # Stable-mode concurrency guard. Runs BEFORE any filesystem side
+    # effect (no mkdir, no tempfile) so a failed check leaves the
+    # caller's tree exactly as it was. The on-disk stat happens just
+    # in time to minimize the race window between the check and the
+    # subsequent atomic write — Phase 3 spec accepts a millisecond-
+    # scale window because the failure modes this protects against
+    # (multi-engineer / multi-tab) operate at second+ scales.
+    if expected_mtime is not None:
+        _enforce_expected_mtime(target_path, expected_mtime)
+
+    configs_dir.mkdir(parents=True, exist_ok=True)
     pre_existing = target_path.exists()
 
     if pre_existing and not overwrite:
@@ -223,6 +302,48 @@ def write_config(
         git_warning=git_warning,
         mtime_warning=None,
     )
+
+
+def _enforce_expected_mtime(target_path: Path, expected_mtime: float) -> None:
+    """Raise :class:`MtimeMismatchError` if the on-disk mtime drifted.
+
+    Stable-mode concurrency guard. Three outcomes:
+
+    1. Target file exists and ``actual_mtime`` is within tolerance of
+       ``expected_mtime`` — returns silently; the caller proceeds to
+       write.
+    2. Target file exists but ``actual_mtime`` is outside tolerance —
+       raises with both expected and actual on the exception. Disk is
+       not yet touched (configs/ may also not yet exist).
+    3. Target file does NOT exist — raises with ``actual_mtime=None``.
+       This catches the "engineer rm'd the file between read and
+       write" scenario as a mismatch rather than silently succeeding
+       as a greenfield write, which would defeat the concurrency
+       guard's purpose.
+
+    A separate helper rather than inlined logic so test fixtures can
+    patch it cleanly when simulating the rare-but-possible
+    ``stat()``-raises case (e.g., permission flap on a Volume FUSE
+    mount). The helper does NOT swallow stat exceptions other than
+    ``FileNotFoundError``: an EPERM or ENOTDIR genuinely is a "we
+    can't tell what state the file is in" condition, and the writer
+    should surface it rather than risk a silent overwrite.
+    """
+    try:
+        actual_mtime = target_path.stat().st_mtime
+    except FileNotFoundError:
+        raise MtimeMismatchError(
+            target_path=str(target_path),
+            expected_mtime=expected_mtime,
+            actual_mtime=None,
+        ) from None
+
+    if abs(actual_mtime - expected_mtime) > _MTIME_TOLERANCE_SECONDS:
+        raise MtimeMismatchError(
+            target_path=str(target_path),
+            expected_mtime=expected_mtime,
+            actual_mtime=actual_mtime,
+        )
 
 
 def _resolve_git_warning(project_path: str) -> str | None:
