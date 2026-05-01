@@ -20,8 +20,10 @@ Auth is handled by Databricks runtime when invoked from Genie Code Agent.
 
 from __future__ import annotations
 
+import argparse
 import re
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -389,3 +391,125 @@ def _compute_materialization_diff(
     if silver_skip_reason is not None:
         return None
     return sorted(set(current) - set(previous))
+
+
+def _format_state(state: BundleState) -> str:
+    """Render a BundleState as a human-readable text block for the CLI.
+
+    Not a stable interface — programmatic callers should use the dataclass
+    directly. Intended for developer-loop debugging output.
+    """
+    lines: list[str] = []
+    lines.append(f"OMOP bundle state: {state.project_path}")
+    lines.append(
+        f"  scaffold_version: {state.scaffold_version or '<missing>'}"
+    )
+    lines.append(f"  configs ({len(state.configs_present)}):")
+    for name in state.configs_present:
+        lines.append(f"    - {name}")
+    if state.ambiguous_configs:
+        lines.append(
+            f"  ambiguous configs ({len(state.ambiguous_configs)}) — "
+            "Phase 2 will refuse until resolved:"
+        )
+        for stem in state.ambiguous_configs:
+            lines.append(f"    ! {stem} (both .yaml and .yml present)")
+    lines.append(
+        f"  tasks wired ({len(state.tasks_wired)}): "
+        f"{', '.join(state.tasks_wired) or '<none>'}"
+    )
+    lines.append(
+        f"  tasks commented ({len(state.tasks_commented)}): "
+        f"{', '.join(state.tasks_commented) or '<none>'}"
+    )
+
+    if state.silver_skip_reason:
+        lines.append(f"  silver tables: <skipped> {state.silver_skip_reason}")
+    else:
+        lines.append(f"  silver tables ({len(state.silver_tables)}):")
+        for name in state.silver_tables:
+            lines.append(f"    - {name}")
+
+    if state.materialization_diff is not None:
+        lines.append(
+            f"  newly materialized vs previous "
+            f"({len(state.materialization_diff)}): "
+            f"{', '.join(state.materialization_diff) or '<none>'}"
+        )
+
+    if state.git_skip_reason:
+        lines.append(f"  git: <skipped> {state.git_skip_reason}")
+    elif state.git_status.is_git_repo:
+        gs = state.git_status
+        lines.append(
+            f"  git: branch={gs.branch or '<unknown>'} "
+            f"dirty={gs.has_uncommitted_changes} "
+            f"untracked={gs.untracked_count} modified={gs.modified_count}"
+        )
+    else:
+        lines.append("  git: not a git repository")
+    return "\n".join(lines)
+
+
+def _cli(argv: list[str] | None = None) -> int:
+    """Developer-loop debugging CLI. Not a customer-facing interface.
+
+    Programmatic callers (Phase 2's ``classify_request``, Phase 3's update
+    workflow) should call ``read_bundle_state()`` directly.
+    """
+    parser = argparse.ArgumentParser(
+        description=(
+            "Read the current state of an OMOP project bundle. Developer-"
+            "loop tool; programmatic callers should use read_bundle_state()."
+        )
+    )
+    parser.add_argument(
+        "--project-path",
+        required=True,
+        help="Filesystem path of the OMOP project tree.",
+    )
+    parser.add_argument(
+        "--core-target",
+        default=None,
+        help="Two-part UC name catalog.schema. Required to probe silver tables.",
+    )
+    parser.add_argument(
+        "--profile",
+        default=None,
+        help="Databricks CLI profile for SDK auth (local development only).",
+    )
+    parser.add_argument(
+        "--no-probe-silver",
+        dest="probe_silver",
+        action="store_false",
+        default=True,
+        help="Skip the silver tables probe (no SDK call).",
+    )
+    parser.add_argument(
+        "--no-probe-git",
+        dest="probe_git",
+        action="store_false",
+        default=True,
+        help="Skip the git status probe (no subprocess call).",
+    )
+
+    args = parser.parse_args(argv)
+
+    try:
+        state = read_bundle_state(
+            project_path=args.project_path,
+            core_target=args.core_target,
+            profile=args.profile,
+            probe_silver=args.probe_silver,
+            probe_git=args.probe_git,
+        )
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+
+    print(_format_state(state))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_cli())
