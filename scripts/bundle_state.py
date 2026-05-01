@@ -26,10 +26,18 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
+from _omop_dag import DAG, topological_sort, transitive_predecessors
 from _workspace_probes import _probe_silver_tables as _probe_silver_via_helper
 
 _MARKER_FILENAME = ".omop-skill-version"
+
+# Strict canonical form for OMOP table names. Phase 2 helpers reject any
+# input that does not match this regex with ValueError, both for safety
+# (path traversal, weird unicode) and for consistency (configs ship as
+# lowercase snake_case, never PascalCase).
+_TARGET_TABLE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 # Per-call timeout for individual git subprocess invocations. Generous
 # enough for slow filesystems (UC Volume mounts) while still bounding the
@@ -74,6 +82,52 @@ class BundleState:
         default_factory=lambda: GitStatus(is_git_repo=False)
     )
     git_skip_reason: str | None = None
+
+
+@dataclass
+class RequestClassification:
+    """Per-table classification of a build request against current bundle state.
+
+    Produced by :func:`classify_request`. Documents what the agent should do
+    when the engineer asks to build (or rebuild, or update) ``target_table``.
+
+    ``suggested_action`` is a single-word verdict the agent's prompt
+    template branches on; ``requires_branching`` is the boolean shortcut
+    for "must offer the three sub-paths (update/replace/different)" before
+    proceeding. A True ``requires_branching`` is exactly the
+    ``suggested_action='branch'`` case.
+    """
+
+    target_table: str
+    config_exists: bool
+    config_path: str | None
+    table_materialized: bool
+    task_wired: bool
+    requires_branching: bool
+    suggested_action: Literal["generate", "branch", "not_scaffolded"]
+
+
+@dataclass
+class BatchClassification:
+    """Multi-table classification with topological build order + gap analysis.
+
+    Produced by :func:`classify_batch`. ``build_order`` is the requested
+    target list re-sorted to OMOP DAG order. ``unsatisfied_predecessors`` is
+    the list of (table, level) tuples for predecessors of the requested
+    targets that are NOT in the batch and NOT already materialized at L3 —
+    the agent must surface these as a gap before proceeding.
+
+    ``conflicts`` collects the per-table classifications for any requested
+    table whose ``suggested_action`` is not ``'generate'`` (i.e., needs
+    branching, or the project isn't scaffolded). Consumers can introspect
+    ``conflicts[i].suggested_action`` to differentiate; the batch-level
+    ``suggested_action`` collapses to one of the three documented verdicts.
+    """
+
+    build_order: list[str]
+    unsatisfied_predecessors: list[tuple[str, int]]
+    conflicts: list[RequestClassification]
+    suggested_action: Literal["proceed", "refuse_predecessor", "branch"]
 
 
 def _list_yaml_configs(configs_dir: Path) -> tuple[list[str], list[str]]:
@@ -350,6 +404,200 @@ def read_bundle_state(
         materialization_diff=materialization_diff,
         git_status=git_status,
         git_skip_reason=git_skip_reason,
+    )
+
+
+def _validate_canonical_table(target_table: str, ambiguous: list[str]) -> None:
+    """Raise ValueError if `target_table` is non-canonical or ambiguous.
+
+    Shared gate for ``classify_request`` and ``classify_batch``. Two
+    independent failure modes are checked, in order:
+
+    1. **Regex** (``^[a-z][a-z0-9_]*$``) — rejects PascalCase, unicode,
+       slashes, dots, leading digits, and obvious traversal attempts like
+       ``../../etc/passwd``.
+    2. **Ambiguity** — refuses if the project has both ``<stem>.yaml`` and
+       ``<stem>.yml`` for this stem. The caller (the agent) must ask the
+       engineer to delete one before any classification is meaningful.
+    """
+    if not _TARGET_TABLE_RE.match(target_table):
+        raise ValueError(
+            f"target_table must be lowercase snake_case matching "
+            f"^[a-z][a-z0-9_]*$, got: {target_table!r}"
+        )
+    if target_table in ambiguous:
+        raise ValueError(
+            f"target_table {target_table!r} is ambiguous: both "
+            f"{target_table}.yaml and {target_table}.yml exist in configs/. "
+            "Delete or rename one before proceeding."
+        )
+
+
+def _resolve_config_path(
+    project_path: str, target_table: str, configs_present: list[str]
+) -> tuple[bool, str | None]:
+    """Return (config_exists, config_path) for `target_table` in this project.
+
+    Prefers ``.yaml`` when only one extension is present (and the ambiguity
+    case has already been excluded by ``_validate_canonical_table``).
+    """
+    yaml_name = f"{target_table}.yaml"
+    yml_name = f"{target_table}.yml"
+    if yaml_name in configs_present:
+        return True, str(Path(project_path) / "configs" / yaml_name)
+    if yml_name in configs_present:
+        return True, str(Path(project_path) / "configs" / yml_name)
+    return False, None
+
+
+def classify_request(
+    state: BundleState, target_table: str
+) -> RequestClassification:
+    """Classify a single-table build request against the current bundle state.
+
+    The agent calls this at the top of the per-table workflow (Step 2 of
+    the v2.0 SKILL.md). It is the contract that drives the three-sub-path
+    branching — update / replace / different table — when an existing
+    config is detected, and it is the gate that surfaces "scaffold first"
+    when the project hasn't been initialized.
+
+    Args:
+        state: Current bundle state from :func:`read_bundle_state`.
+        target_table: Lowercase canonical OMOP table name (e.g. ``"person"``).
+
+    Returns:
+        A populated :class:`RequestClassification`.
+
+    Raises:
+        ValueError: ``target_table`` is non-canonical (regex reject) or
+            ambiguous (both ``.yaml`` and ``.yml`` present in configs/).
+    """
+    _validate_canonical_table(target_table, state.ambiguous_configs)
+
+    config_exists, config_path = _resolve_config_path(
+        state.project_path, target_table, state.configs_present
+    )
+    table_materialized = target_table in state.silver_tables
+    task_wired = target_table in state.tasks_wired
+
+    if state.scaffold_version is None:
+        suggested: Literal["generate", "branch", "not_scaffolded"] = "not_scaffolded"
+    elif config_exists:
+        suggested = "branch"
+    else:
+        suggested = "generate"
+
+    return RequestClassification(
+        target_table=target_table,
+        config_exists=config_exists,
+        config_path=config_path,
+        table_materialized=table_materialized,
+        task_wired=task_wired,
+        requires_branching=(suggested == "branch"),
+        suggested_action=suggested,
+    )
+
+
+def _table_state_level(state: BundleState, table: str) -> int:
+    """Return the L0-L3 state level for ``table`` in the given bundle state.
+
+    Levels (per Phase 2 spec):
+
+    - **L0** — no config, no task, no table. (Or: weird state where a
+      table is materialized without any local config; the skill cannot
+      manage it, so we surface it as L0.)
+    - **L1** — config exists, task is commented or absent, table not
+      materialized. Mid-edit / ready-to-wire state.
+    - **L2** — config exists, task is wired, table not yet materialized.
+    - **L3** — config exists, task wired, table materialized. The "done"
+      state — predecessors at L3 are satisfied without needing inclusion
+      in a downstream batch.
+    """
+    has_config = (
+        f"{table}.yaml" in state.configs_present
+        or f"{table}.yml" in state.configs_present
+    )
+    if not has_config:
+        return 0
+    has_wired_task = table in state.tasks_wired
+    has_table = table in state.silver_tables
+    if has_wired_task and has_table:
+        return 3
+    if has_wired_task:
+        return 2
+    return 1
+
+
+def classify_batch(
+    state: BundleState, target_tables: list[str]
+) -> BatchClassification:
+    """Classify a multi-table build request.
+
+    Given a list of target tables, returns a topologically-ordered build
+    plan, identifies missing predecessors not in the batch, and collects
+    per-table conflicts (existing configs needing branching, or
+    not-scaffolded projects). The agent's batch response template branches
+    on ``suggested_action``:
+
+    - ``'proceed'`` — all targets are at L0 with predecessors satisfied;
+      generate them in ``build_order``.
+    - ``'refuse_predecessor'`` — at least one predecessor is not in the
+      batch and not at L3; surface the gap and ask the engineer to add it.
+    - ``'branch'`` — at least one requested table needs branching (existing
+      config, or project not scaffolded); resolve before proceeding.
+
+    Args:
+        state: Current bundle state.
+        target_tables: Requested target tables. Order is irrelevant — the
+            helper sorts to OMOP DAG order.
+
+    Returns:
+        A populated :class:`BatchClassification`.
+
+    Raises:
+        ValueError: any element of ``target_tables`` is non-canonical or
+            ambiguous (re-uses :func:`classify_request`'s gates).
+        KeyError: any element of ``target_tables`` is not a known OMOP
+            table in :data:`_omop_dag.DAG`.
+    """
+    # Pre-validate every input first so canonical-form violations surface as
+    # ValueError before topological_sort sees the input and turns them into
+    # KeyError instead. KeyError is reserved for "regex-clean name not in DAG."
+    for t in target_tables:
+        _validate_canonical_table(t, state.ambiguous_configs)
+
+    targets_set = set(target_tables)
+    build_order = topological_sort(targets_set) if targets_set else []
+
+    per_table = [classify_request(state, t) for t in build_order]
+    conflicts = [c for c in per_table if c.suggested_action != "generate"]
+
+    unsatisfied: list[tuple[str, int]] = []
+    seen: set[str] = set()
+    for table in build_order:
+        for predecessor in transitive_predecessors(table):
+            if predecessor in targets_set:
+                continue
+            if predecessor in seen:
+                continue
+            seen.add(predecessor)
+            level = _table_state_level(state, predecessor)
+            if level < 3:
+                unsatisfied.append((predecessor, level))
+    unsatisfied.sort()
+
+    if conflicts:
+        suggested: Literal["proceed", "refuse_predecessor", "branch"] = "branch"
+    elif unsatisfied:
+        suggested = "refuse_predecessor"
+    else:
+        suggested = "proceed"
+
+    return BatchClassification(
+        build_order=build_order,
+        unsatisfied_predecessors=unsatisfied,
+        conflicts=conflicts,
+        suggested_action=suggested,
     )
 
 
