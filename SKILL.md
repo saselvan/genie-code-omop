@@ -698,7 +698,6 @@ If any fixtures fail after your change, the change broke the skill's contract. F
 ## References
 
 - [`references/canonical_examples.md`](references/canonical_examples.md) — `person` (dimension) and `measurement` (Maps to + Maps to unit) canonical YAML examples
-- [`references/dag_wiring.md`](references/dag_wiring.md) — Step 8 walkthrough for adding tasks to `resources/jobs.yml`
 - [`references/omop_cdm_v54_spec.md`](references/omop_cdm_v54_spec.md) — required columns, keys, FKs, concept domains (clinical scope)
 - [`references/ehr_to_omop_mappings.md`](references/ehr_to_omop_mappings.md) — bronze → OMOP table and column mapping notes
 - [`references/vocabulary_domains.md`](references/vocabulary_domains.md) — domain ↔ vocabulary patterns and join strategies
