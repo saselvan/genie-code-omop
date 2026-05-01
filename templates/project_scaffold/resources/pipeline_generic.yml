@@ -1,0 +1,103 @@
+# One SDP pipeline definition per OMOP table. All pipelines share the same Python source
+# files (src/02_omop_transform_pipeline.py + helpers); the only thing that varies is the
+# `configuration.table_name` value, which the pipeline reads via spark.conf.get to load
+# the matching configs/<table>.yaml.
+#
+# Why one pipeline per table rather than one shared pipeline + per-task override:
+#   The Jobs API `pipeline_task` object only accepts `pipeline_id` and `full_refresh`. There
+#   is no documented way to override pipeline `configuration` on a per-task basis. So each
+#   table needs its own pipeline resource. The libraries list is identical across all of
+#   them — the duplication is just the configuration.table_name line.
+#
+# To add a new OMOP table:
+#   1. Drop a configs/<table>.yaml file (see configs/_schema.yaml).
+#   2. Copy one of the blocks below, change the resource key + name + table_name.
+#   3. Add a matching task in resources/jobs.yml referencing the new pipeline id.
+
+resources:
+  pipelines:
+    omop_person:
+      name: omop_person_${bundle.target}
+      serverless: true
+      catalog: ${var.catalog}
+      schema: ${var.core_schema}
+      development: true
+      libraries:
+        # Paths are resolved relative to this YAML file (resources/), so use ../src/...
+        - file:
+            path: ../src/02_omop_transform_pipeline.py
+        - file:
+            path: ../src/config_loader.py
+        - file:
+            path: ../src/vocab_resolver.py
+        - file:
+            path: ../src/column_mapper.py
+      configuration:
+        catalog: ${var.catalog}
+        bronze_schema: ${var.bronze_schema}
+        core_schema: ${var.core_schema}
+        ref_schema: ${var.ref_schema}
+        config_volume: ${var.config_volume}
+        table_name: person
+      notifications:
+        - alerts:
+            - on-update-failure
+          email_recipients:
+            - ${var.notification_email}
+
+    omop_visit_occurrence:
+      name: omop_visit_occurrence_${bundle.target}
+      serverless: true
+      catalog: ${var.catalog}
+      schema: ${var.core_schema}
+      development: true
+      libraries:
+        - file:
+            path: ../src/02_omop_transform_pipeline.py
+        - file:
+            path: ../src/config_loader.py
+        - file:
+            path: ../src/vocab_resolver.py
+        - file:
+            path: ../src/column_mapper.py
+      configuration:
+        catalog: ${var.catalog}
+        bronze_schema: ${var.bronze_schema}
+        core_schema: ${var.core_schema}
+        ref_schema: ${var.ref_schema}
+        config_volume: ${var.config_volume}
+        table_name: visit_occurrence
+      notifications:
+        - alerts:
+            - on-update-failure
+          email_recipients:
+            - ${var.notification_email}
+
+    # Template for the remaining 10 OMOP CDM v5.4 tables. Uncomment + customize once the
+    # corresponding configs/<table>.yaml exists.
+    #
+    # omop_care_site:
+    #   name: omop_care_site_${bundle.target}
+    #   serverless: true
+    #   catalog: ${var.catalog}
+    #   schema: ${var.core_schema}
+    #   development: true
+    #   libraries:
+    #     - file: { path: ../src/02_omop_transform_pipeline.py }
+    #     - file: { path: ../src/config_loader.py }
+    #     - file: { path: ../src/vocab_resolver.py }
+    #     - file: { path: ../src/column_mapper.py }
+    #   configuration:
+    #     catalog: ${var.catalog}
+    #     bronze_schema: ${var.bronze_schema}
+    #     core_schema: ${var.core_schema}
+    #     ref_schema: ${var.ref_schema}
+    #     config_volume: ${var.config_volume}
+    #     table_name: care_site
+    #   notifications:
+    #     - alerts: [on-update-failure]
+    #       email_recipients: [${var.notification_email}]
+    #
+    # Repeat the block above for: provider, location, observation_period,
+    # condition_occurrence, procedure_occurrence, drug_exposure, measurement,
+    # condition_era, drug_era. Update the resource key, name, and table_name.

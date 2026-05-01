@@ -1,0 +1,233 @@
+# =============================================================================
+# OMOP — OMOP table transform config (TEMPLATE + machine-readable schema)
+# =============================================================================
+# Copy this structure per OMOP target table. Placeholders {catalog}, {bronze_schema},
+# {ref_schema} are substituted at load time from Spark conf / bundle vars.
+#
+# WARNING: This file is a TEMPLATE with placeholder values. Do NOT use it as a
+# runnable config. Copy person.yaml or visit_occurrence.yaml as your starting point.
+# -----------------------------------------------------------------------------
+
+# OMOP CDM target table name (snake_case). Becomes @dp.table(name=...) default.
+table_name: "<TABLE_NAME>"
+
+# Unity Catalog schema that receives the transformed table (silver / core OMOP).
+target_schema: core_omop
+
+# Short human description for pipeline UI and docs.
+description: "<DESCRIPTION — replace with real table summary>"
+
+# -----------------------------------------------------------------------------
+# sources — bronze (or other) tables to read. Each row is one Spark DataFrame source.
+# -----------------------------------------------------------------------------
+# alias: short name used in SQL exprs and joins (e.g. pat, enc).
+# table: 3-part UC name; may include {catalog}.{bronze_schema}.table tokens.
+sources:
+  - alias: "<ALIAS>"
+    table: "{catalog}.{bronze_schema}.<TABLE>"
+
+# -----------------------------------------------------------------------------
+# joins — combine sources into one rowset before vocabulary and column mapping.
+# -----------------------------------------------------------------------------
+# left / right: must match aliases from sources.
+# type: inner | left | right | full (default left for EHR source driving tables).
+# condition: SQL join predicate as a single string (quote if it contains ':').
+# NOTE: key is `condition`, not `on` — YAML 1.1 parses bare `on:` as boolean True.
+# Optional — omit or leave empty [] for single-source tables (e.g. location, care_site).
+joins:
+  - left: "<LEFT_ALIAS>"
+    right: "<RIGHT_ALIAS>"
+    type: left
+    condition: "<LEFT_ALIAS>.<KEY> = <RIGHT_ALIAS>.<KEY>"
+
+# -----------------------------------------------------------------------------
+# vocabulary_lookups — resolve raw codes to OMOP concept_id columns.
+# -----------------------------------------------------------------------------
+# source_alias: which source row the code lives on.
+# source_column: column name only (PascalCase EHR source); resolver qualifies alias.
+# target_column: output column name (e.g. race_concept_id).
+# resolution:
+#   - source_to_concept_map: local codes (race, ethnicity, visit type) via reference.source_to_concept_map
+#   - concept_table: standard vocabs (LOINC) via reference.concept filtered by domain_id + vocabulary_id
+#   - concept_table_mapped: non-standard → standard crosswalk (ICD10CM→SNOMED, CPT4→SNOMED, NDC→RxNorm)
+#     via reference.concept + concept_relationship "Maps to" chain. domain_id required for one-to-many filtering.
+# source_vocabulary_id: required when resolution is source_to_concept_map (e.g. Race, Visit).
+# domain_id / vocabulary_id: required when resolution is concept_table or concept_table_mapped.
+# relationship_id: default "Maps to". Override for "Maps to value" or "Maps to unit" (measurement).
+# standard_only: default true. Set false for *_source_concept_id columns (non-standard OK).
+# fallback: integer concept_id when no match (typically 0 = "unknown").
+# Optional — omit or leave empty [] for tables without vocabulary lookups.
+vocabulary_lookups: []
+
+# -----------------------------------------------------------------------------
+# column_mappings — target OMOP column <- Spark SQL expression.
+# -----------------------------------------------------------------------------
+# target: OMOP column name in snake_case.
+# expr: SQL fragment using source aliases from joins (e.g. pat.PatientID).
+#       Quote the whole expr in YAML if it contains ':' (e.g. CAST(... AS TIMESTAMP)).
+column_mappings:
+  - target: "<OMOP_COLUMN>"
+    expr: "<SQL_EXPRESSION>"
+
+# -----------------------------------------------------------------------------
+# expectations — map to @dp.expect_all_or_fail, @dp.expect_all_or_drop, @dp.expect_all.
+# -----------------------------------------------------------------------------
+# fail: violation fails the pipeline (data contract / PK).
+# drop: violating rows removed from output.
+# warn: logged; rows retained (unknown vocabulary, soft quality).
+# Each rule: name (stable id) + expr (SQL on output column names).
+# All three groups are optional — omit any you don't need for this table.
+expectations:
+  fail: []
+  drop: []
+  warn: []
+
+# =============================================================================
+# JSON-Schema-style contract (types + required vs optional)
+# =============================================================================
+# Consumed by Pydantic / validators; documents the canonical shape of configs/*.yaml.
+config_json_schema:
+  $schema: "https://json-schema.org/draft/2020-12/schema"
+  title: OMOPTableTransformConfig
+  type: object
+  additionalProperties: false
+  required:
+    - table_name
+    - target_schema
+    - description
+    - sources
+    - column_mappings
+  properties:
+    table_name:
+      type: string
+      description: OMOP target table in snake_case.
+    target_schema:
+      type: string
+      description: UC schema for silver OMOP output.
+    description:
+      type: string
+      description: Human-readable summary.
+    sources:
+      type: array
+      minItems: 1
+      items:
+        type: object
+        additionalProperties: false
+        required: [alias, table]
+        properties:
+          alias:
+            type: string
+            description: Short alias for SQL exprs and joins.
+          table:
+            type: string
+            description: 3-part UC table name; may include placeholders.
+    joins:
+      type: array
+      items:
+        type: object
+        additionalProperties: false
+        required: [left, right, type, condition]
+        properties:
+          left: { type: string }
+          right: { type: string }
+          type:
+            type: string
+            enum: [inner, left, right, full]
+          condition:
+            type: string
+            description: SQL ON predicate (key is `condition`, not `on`, due to YAML 1.1 boolean coercion).
+    vocabulary_lookups:
+      type: array
+      items:
+        type: object
+        additionalProperties: false
+        required:
+          - source_alias
+          - source_column
+          - target_column
+          - resolution
+          - fallback
+        properties:
+          source_alias: { type: string }
+          source_column: { type: string }
+          target_column: { type: string }
+          resolution:
+            type: string
+            enum: [concept_table, source_to_concept_map, concept_table_mapped]
+            description: >
+              source_to_concept_map: local codes (race, ethnicity, visit type).
+              concept_table: standard vocabs that ARE the standard (LOINC for Measurement).
+              concept_table_mapped: non-standard → standard crosswalk via Maps to
+              (ICD10CM→SNOMED, CPT4→SNOMED, NDC→RxNorm). Use for *_concept_id on clinical fact tables.
+          source_vocabulary_id:
+            type: string
+            description: Required when resolution is source_to_concept_map.
+          domain_id:
+            type: string
+            description: Required when resolution is concept_table or concept_table_mapped.
+          vocabulary_id:
+            type: string
+            description: Required when resolution is concept_table or concept_table_mapped.
+          relationship_id:
+            type: string
+            default: "Maps to"
+            description: Relationship to traverse in concept_table_mapped. Override with "Maps to value" or "Maps to unit" for measurement.
+          standard_only:
+            type: boolean
+            default: true
+            description: If true, only return standard concepts. Set false for *_source_concept_id columns.
+          fallback: { type: integer }
+        allOf:
+          - if:
+              properties:
+                resolution: { const: source_to_concept_map }
+            then:
+              required: [source_vocabulary_id]
+          - if:
+              properties:
+                resolution: { const: concept_table }
+            then:
+              required: [domain_id, vocabulary_id]
+          - if:
+              properties:
+                resolution: { const: concept_table_mapped }
+            then:
+              required: [domain_id, vocabulary_id]
+    column_mappings:
+      type: array
+      minItems: 1
+      items:
+        type: object
+        additionalProperties: false
+        required: [target, expr]
+        properties:
+          target: { type: string }
+          expr: { type: string }
+    expectations:
+      type: object
+      additionalProperties: false
+      properties:
+        fail:
+          type: array
+          items:
+            type: object
+            required: [name, expr]
+            properties:
+              name: { type: string }
+              expr: { type: string }
+        drop:
+          type: array
+          items:
+            type: object
+            required: [name, expr]
+            properties:
+              name: { type: string }
+              expr: { type: string }
+        warn:
+          type: array
+          items:
+            type: object
+            required: [name, expr]
+            properties:
+              name: { type: string }
+              expr: { type: string }
