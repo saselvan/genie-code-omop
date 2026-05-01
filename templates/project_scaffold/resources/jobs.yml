@@ -1,15 +1,10 @@
-# OMOP Full Build DAG — all 14 tables as commented placeholders.
-# Uncomment each task as you ship its config and validate the table.
+# OMOP Full Build DAG. The `person` task ships uncommented; the other 13
+# OMOP CDM v5.4 tables ship as commented placeholders.
 # DAG dependencies follow Round 1-4 ordering from
 # .assistant/skills/omop-pipeline-builder/references/omop_dag_dependencies.md
 #
 # IMPORTANT: every task uses full_refresh=true. OMOP rebuilds are batch
 # snapshots; incremental refresh would silently double-count rows.
-#
-# NOTE: With all tasks commented out, `databricks bundle validate` will
-# report "no tasks defined" or similar. That's expected — uncomment your
-# first task (typically person, since most other tables depend on it) once
-# its config and pipeline resource are shipped.
 
 resources:
   jobs:
@@ -20,10 +15,14 @@ resources:
         # Round 1 — Dimension tables (no dependencies)
         # ─────────────────────────────────────────────────────────────
 
-        # - task_key: person
-        #   pipeline_task:
-        #     pipeline_id: ${resources.pipelines.omop_person.id}
-        #     full_refresh: true
+        # This 'person' task ships uncommented so 'bundle validate' succeeds on a
+        # fresh scaffold. After your first successful build, re-comment if you're
+        # not yet ready to run person, or leave it and uncomment additional tables
+        # (visit_occurrence, condition_occurrence, etc.) as their configs are added.
+        - task_key: person
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.omop_person.id}
+            full_refresh: true
 
         # - task_key: care_site
         #   pipeline_task:

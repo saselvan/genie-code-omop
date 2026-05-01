@@ -220,12 +220,13 @@ OMOP tables materialize in: `{silver_target}`
 
 1. Replace the `<CHANGEME>` placeholder in `databricks.yml` with your workspace URL.
 2. Validate the scaffold: `databricks bundle validate -t production`
-   (note: `bundle validate` will warn that no tasks are defined until you uncomment
-   your first table in `resources/jobs.yml` — typically `person`. The warning is
-   expected for a freshly-scaffolded project.)
+   (the scaffold ships with the `person` task uncommented in `resources/jobs.yml`
+   so this validation succeeds on a fresh project. Uncomment additional table
+   tasks as their configs are added.)
 3. Connect this project tree to your team's Git repo. The skill works without
    Git, but recovery and audit are much easier with version control.
-4. Pick the OMOP table you want to build first. Most teams start with Person.
+4. Pick the OMOP table you want to build first. Most teams start with Person —
+   the scaffold's pre-uncommented task points at this build.
 5. In Genie Code, ask the agent: "Draft the Person config." It will run the
    per-table workflow and produce a draft `configs/person.yaml` for your review.
 6. Review and ratify the draft, then commit through your team's normal Git/CI flow.
