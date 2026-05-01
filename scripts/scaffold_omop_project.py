@@ -26,11 +26,14 @@ Auth is handled by Databricks runtime when invoked from Genie Code Agent.
 from __future__ import annotations
 
 import argparse
+import logging
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
 from databricks.sdk import WorkspaceClient
+
+_log = logging.getLogger(__name__)
 
 TEMPLATES_DIR = (
     Path(__file__).resolve().parent.parent / "templates" / "project_scaffold"
@@ -73,9 +76,25 @@ def _default_silver_target(bundle_target: str) -> str:
     parts = bundle_target.split(".")
     if len(parts) < 2:
         raise ValueError(
-            f"bundle_target must be catalog.schema.volume, got: {bundle_target}"
+            "bundle_target must be at least catalog.schema to derive a default "
+            f"silver_target, got: {bundle_target}"
         )
     return f"{parts[0]}.core_omop"
+
+
+def _validate_silver_target(silver_target: str) -> None:
+    """Raises ValueError if silver_target isn't exactly two parts (catalog.schema).
+
+    Defensive guard against malformed --silver-target inputs that would otherwise
+    crash later inside _render_databricks_yml's `silver_target.split('.')[1]`
+    with an IndexError, or silently render the wrong silver_schema if 3+ parts
+    were supplied.
+    """
+    parts = silver_target.split(".")
+    if len(parts) != 2:
+        raise ValueError(
+            f"silver_target must be two-part catalog.schema, got: {silver_target}"
+        )
 
 
 def _render_databricks_yml(
@@ -255,13 +274,20 @@ def scaffold_project(
         )
 
     silver_target = silver_target or _default_silver_target(bundle_target)
+    _validate_silver_target(silver_target)
 
     _verify_volume_exists(bundle_target, profile=profile)
 
     catalog = bundle_target.split(".")[0]
 
     files_written = _copy_template_tree(TEMPLATES_DIR, target)
-    _template_catalog_in_load_vocabulary(target, catalog)
+    templated = _template_catalog_in_load_vocabulary(target, catalog)
+    if templated == 0:
+        _log.info(
+            "scaffolder: 'your_catalog' placeholder not found in scaffolded "
+            "src/01_load_vocabulary.py; skipping catalog substitution. "
+            "(Source template may have evolved — re-check the templating helper.)"
+        )
 
     existing, skip_reason = _probe_existing_tables(silver_target, profile=profile)
 
@@ -458,6 +484,14 @@ def _cli() -> None:
     except VolumeNotFoundError as e:
         print(f"ERROR: {e}")
         raise SystemExit(2)
+    except FileNotFoundError as e:
+        print(
+            f"ERROR: scaffold templates missing — {e}\n"
+            "  This usually means the skill package is broken or the script "
+            "was moved out of its expected location. Reinstall the skill via "
+            "`databricks workspace import-dir --overwrite ...` and retry."
+        )
+        raise SystemExit(3)
     except ValueError as e:
         print(f"ERROR: {e}")
         raise SystemExit(1)
