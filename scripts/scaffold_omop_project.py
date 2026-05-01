@@ -34,6 +34,8 @@ from typing import Literal
 
 from databricks.sdk import WorkspaceClient
 
+from _workspace_probes import _probe_existing_tables
+
 _log = logging.getLogger(__name__)
 
 TEMPLATES_DIR = (
@@ -433,30 +435,6 @@ def _verify_volume_exists(volume_target: str, profile: str | None = None) -> Non
             volume_target=volume_target,
             underlying_reason=f"{type(e).__name__}: {e}",
         ) from e
-
-
-def _probe_existing_tables(
-    core_target: str, profile: str | None = None
-) -> tuple[list[str], str | None]:
-    """Best-effort probe. Returns ([], reason) on any failure."""
-    parts = core_target.split(".")
-    if len(parts) != 2:
-        return [], f"core_target must be catalog.schema, got: {core_target}"
-    catalog, schema = parts
-
-    try:
-        w = WorkspaceClient(profile=profile)
-    except Exception as e:
-        return [], f"SDK auth failed: {type(e).__name__}: {e}"
-
-    try:
-        tables = list(w.tables.list(catalog_name=catalog, schema_name=schema))
-        return [t.name for t in tables if t.name], None
-    except Exception as e:
-        return (
-            [],
-            f"Could not list tables in {core_target}: {type(e).__name__}: {e}",
-        )
 
 
 def _copy_template_tree(src: Path, dst: Path) -> int:
