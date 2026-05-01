@@ -372,9 +372,12 @@ The script reports pass/fail for five layers (schema, primary-key uniqueness, co
 
 ### Step 7 — Wire the table into the OMOP job DAG
 
-Once the pipeline runs green and `validate_omop.py` passes 5/5 layers, wire
-the table into the orchestrated `omop_full_build` job by uncommenting its
-placeholder in `resources/jobs.yml`.
+Once the pipeline runs green, `validate_omop.py` passes 5/5 layers, and a
+reviewer (data engineer + clinical informaticist or OMOP-experienced peer)
+has accepted the materialized table, wire the table into the orchestrated
+`omop_full_build` job by uncommenting its placeholder in `resources/jobs.yml`.
+The 5/5 validator confirms structural well-formedness; reviewer acceptance
+confirms OMOP fidelity — the clinical and source-data choices were right.
 
 If you used Step 0 to scaffold, the placeholder is already there with correct
 `depends_on` from the OMOP DAG. Find the table in the right Round section,
