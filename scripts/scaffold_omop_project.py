@@ -247,7 +247,41 @@ def scaffold_project(
             accessible. Agent catches and asks customer to create.
         ValueError: if project_path already contains a databricks.yml.
     """
-    raise NotImplementedError("implemented in step 4")
+    target = Path(project_path)
+    if (target / "databricks.yml").exists():
+        raise ValueError(
+            f"{project_path} already has a databricks.yml. Refusing to overwrite. "
+            "Pick a different path, or delete the existing project to start fresh."
+        )
+
+    silver_target = silver_target or _default_silver_target(bundle_target)
+
+    _verify_volume_exists(bundle_target, profile=profile)
+
+    catalog = bundle_target.split(".")[0]
+
+    files_written = _copy_template_tree(TEMPLATES_DIR, target)
+    _template_catalog_in_load_vocabulary(target, catalog)
+
+    existing, skip_reason = _probe_existing_tables(silver_target, profile=profile)
+
+    files_written += _write_templated_files(
+        target=target,
+        bundle_target=bundle_target,
+        silver_target=silver_target,
+        project_name=project_name,
+        existing_tables=existing,
+        detection_skipped_reason=skip_reason,
+    )
+
+    return ScaffoldResult(
+        project_path=str(target.resolve()),
+        bundle_target=bundle_target,
+        silver_target=silver_target,
+        existing_tables=existing,
+        detection_skipped_reason=skip_reason,
+        files_written=files_written,
+    )
 
 
 def _verify_volume_exists(bundle_target: str, profile: str | None = None) -> None:
