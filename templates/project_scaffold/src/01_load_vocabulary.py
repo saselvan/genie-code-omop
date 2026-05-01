@@ -1,14 +1,16 @@
-# Databricks notebook source
-# MAGIC %md
-# MAGIC # OHDSI vocabulary + custom source_to_concept_map seed
-# MAGIC
-# MAGIC **Reference data load.** Run once per environment. Not an SDP pipeline — `COPY INTO` is the right tool for bulk reference data.
-# MAGIC
-# MAGIC **Pre-req:** Download the Athena vocab bundle, extract CSVs, and upload them to `{vocab_volume_path}` (tab-separated, header row). Default volume: `/Volumes/{catalog}/{ref_schema}/vocabulary_files/`.
+"""OHDSI vocabulary + custom source_to_concept_map seed loader.
 
-# COMMAND ----------
+Reference data load. Run once per environment. Not an SDP pipeline — COPY INTO
+is the right tool for bulk reference data.
 
-# Databricks notebook source
+Pre-req: Download the Athena vocab bundle, extract CSVs, and upload them to
+{vocab_volume_path} (tab-separated, header row). Default volume:
+/Volumes/{catalog}/{ref_schema}/vocabulary_files/.
+
+Runs as a Databricks Python task or as a notebook (re-add a `# Databricks
+notebook source` header on line 1 if you want notebook-task semantics).
+"""
+
 dbutils.widgets.text("catalog", "your_catalog", "catalog")
 dbutils.widgets.text("ref_schema", "reference", "ref_schema")
 dbutils.widgets.text(
@@ -37,13 +39,11 @@ fq_ref = f"`{catalog}`.`{ref_schema}`"
 
 # COMMAND ----------
 
-# Databricks notebook source
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {fq_ref}")
 spark.sql(f"CREATE VOLUME IF NOT EXISTS {fq_ref}.`vocabulary_files`")
 
 # COMMAND ----------
 
-# Databricks notebook source
 # OHDSI Athena CSV column order matches CREATE TABLE column order below.
 # Dates are STRING for robust COPY INTO (Athena uses YYYYMMDD; nullable cols may be empty).
 VOCAB_TABLE_DDL = {
@@ -167,7 +167,6 @@ def _parse_ddl_cols(ddl: str):
 
 # COMMAND ----------
 
-# Databricks notebook source
 for file_base, table_key in VOCAB_LOAD_ORDER:
     fq_table = f"{fq_ref}.`{table_key}`"
     ddl_cols = VOCAB_TABLE_DDL[table_key]
@@ -201,7 +200,6 @@ for file_base, table_key in VOCAB_LOAD_ORDER:
 
 # COMMAND ----------
 
-# Databricks notebook source
 # source_to_concept_map — OHDSI CDM v5.4-style columns (UC table name lower snake_case).
 spark.sql(
     f"""
@@ -299,7 +297,6 @@ print("Merged custom source_to_concept_map seed (upsert by source_code + source_
 
 # COMMAND ----------
 
-# Databricks notebook source
 concept_cnt = spark.sql(f"SELECT COUNT(*) AS c FROM {fq_ref}.`concept`").collect()[0]["c"]
 print(f"concept row count (expect ~6M after full Athena load): {concept_cnt}")
 
@@ -313,8 +310,8 @@ for t in count_tables:
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ## Athena vocabulary download
-# MAGIC
-# MAGIC - Bulk download (CSV bundle): [https://athena.ohdsi.org](https://athena.ohdsi.org)
-# MAGIC - **CONCEPT_CPT4.csv** is optional until you complete the separate CPT4 license / vocabulary key step in Athena; this notebook skips missing files without failing the run.
+# Athena vocabulary download:
+#   - Bulk download (CSV bundle): https://athena.ohdsi.org
+#   - CONCEPT_CPT4.csv is optional until you complete the separate CPT4
+#     license / vocabulary key step in Athena; this script skips missing
+#     files without failing the run.

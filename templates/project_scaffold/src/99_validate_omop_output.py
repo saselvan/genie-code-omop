@@ -1,11 +1,11 @@
-# Databricks notebook source
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ### OMOP silver validation (5 layers)
-# MAGIC Set widgets, then run. Requires `{catalog}.{ref_schema}.concept` and target `{catalog}.{core_schema}.{table}`.
+"""Five-layer OMOP CDM validation (schema, PK, RI, domain, completeness) for core silver tables.
 
-# COMMAND ----------
-"""Five-layer OMOP CDM validation (schema, PK, RI, domain, completeness) for core silver tables."""
+Set widgets (`catalog`, `core_schema`, `ref_schema`, `table`), then run.
+Requires `{catalog}.{ref_schema}.concept` and target `{catalog}.{core_schema}.{table}`.
+
+Runs as a Databricks Python task or as a notebook (re-add a `# Databricks
+notebook source` header on line 1 if you want notebook-task semantics).
+"""
 
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
