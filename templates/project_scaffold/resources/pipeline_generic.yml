@@ -21,7 +21,6 @@ resources:
       serverless: true
       catalog: ${var.catalog}
       schema: ${var.core_schema}
-      development: true
       libraries:
         # Paths are resolved relative to this YAML file (resources/), so use ../src/...
         - file:
@@ -50,7 +49,6 @@ resources:
       serverless: true
       catalog: ${var.catalog}
       schema: ${var.core_schema}
-      development: true
       libraries:
         - file:
             path: ../src/02_omop_transform_pipeline.py
@@ -81,7 +79,6 @@ resources:
     #   serverless: true
     #   catalog: ${var.catalog}
     #   schema: ${var.core_schema}
-    #   development: true
     #   libraries:
     #     - file: { path: ../src/02_omop_transform_pipeline.py }
     #     - file: { path: ../src/config_loader.py }
