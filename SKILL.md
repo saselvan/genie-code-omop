@@ -137,7 +137,7 @@ validated configs to the project tree.
 
 ### Step 1 — Confirm the target OMOP table
 
-Agree on the OMOP CDM v5.4 target (for example `person`, `visit_occurrence`, `condition_occurrence`). Confirm the Unity Catalog names: `<your_catalog>`, `core_omop` for silver, `<your_bronze_schema>` for bronze, `reference` for vocab. Use **three-part** names only: `{catalog}.{schema}.{table}`.
+Agree on the OMOP CDM v5.4 target (for example `person`, `visit_occurrence`, `condition_occurrence`). If you came from Step 0, this is a quick re-confirmation of the table you already picked there. Confirm the Unity Catalog names: `<your_catalog>`, `core_omop` for silver, `<your_bronze_schema>` for bronze, `reference` for vocab. Use **three-part** names only: `{catalog}.{schema}.{table}`.
 
 #### Discover the bronze source for this target
 
