@@ -216,13 +216,21 @@ def _probe_git_status(project_path: str) -> tuple[GitStatus, str | None]:
     if is_repo_proc.returncode != 0:
         return GitStatus(is_git_repo=False), "Not a git repository"
 
+    # Second + third git calls. Mirror the breadth of error handling from
+    # the first call so the documented "never raises" contract holds even
+    # if the git binary disappears between calls or the OS surfaces a
+    # transient PermissionError on /. (PE-review fix.)
     try:
         branch_proc = _run_git(project_path, "rev-parse", "--abbrev-ref", "HEAD")
         status_proc = _run_git(project_path, "status", "--porcelain")
+    except FileNotFoundError:
+        return GitStatus(is_git_repo=True), "git command disappeared mid-probe"
     except subprocess.TimeoutExpired:
+        return GitStatus(is_git_repo=True), "git rev-parse/status timed out"
+    except OSError as e:
         return (
             GitStatus(is_git_repo=True),
-            "git rev-parse/status timed out",
+            f"git invocation failed: {type(e).__name__}: {e}",
         )
 
     if branch_proc.returncode != 0:
