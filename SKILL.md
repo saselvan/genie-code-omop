@@ -2,7 +2,7 @@
 name: omop-pipeline-builder
 description: "Use when scaffolding YAML transform configs from EHR bronze tables into OMOP CDM v5.4 silver, adding rows to the source_to_concept_map UC table (via direct SQL or a git-tracked bootstrap CSV) to map institution-specific codes to standard concepts, validating materialized OMOP silver tables (5-layer schema/PK/RI/domain/completeness checks), or wiring new OMOP tables into the resources/jobs.yml DAG. Triggers on YAML config authoring, vocabulary concept_id resolution strategy decisions (source_to_concept_map vs concept_table vs concept_table_mapped), or starting Spark Declarative Pipeline updates for specific OMOP tables."
 license: MIT
-compatibility: Designed for Databricks Genie Code Agent mode launched from a notebook with a Python-capable cluster (serverless or classic). Genie Code launched from the catalog browser, a Genie Space, or the SQL editor is backed by a SQL warehouse and CANNOT run this skill's Step 4 Pydantic validator — see "Compute requirements" below. Requires databricks-sdk, pyyaml, pydantic. Run pipeline triggering uses Pipelines Editor native run when available, scripts/run_pipeline.py from notebooks.
+compatibility: Designed for Databricks Genie Code Agent mode launched from a notebook with a Python-capable cluster (serverless or classic). Genie Code launched from the catalog browser, a Genie Space, or the SQL editor is backed by a SQL warehouse and CANNOT run this skill's Step 6 Pydantic validator — see "Compute requirements" below. Requires databricks-sdk, pyyaml, pydantic. Run pipeline triggering uses Pipelines Editor native run when available, scripts/run_pipeline.py from notebooks.
 metadata:
   author: Samuel Selvan (Databricks SA)
   version: "1.6"
@@ -20,7 +20,7 @@ Skill for authoring YAML-driven SDP (Spark Declarative Pipelines) transforms fro
 
 ## Compute requirements (read before launching)
 
-This skill **must be launched from a notebook** with a Python-capable cluster attached (serverless or classic). The Step 4 validator (`scripts/validate_yaml_schema.py`) is Pydantic — it requires a Python interpreter. The skill cannot run on a SQL warehouse.
+This skill **must be launched from a notebook** with a Python-capable cluster attached (serverless or classic). The Step 6 validator (`scripts/validate_yaml_schema.py`) is Pydantic — it requires a Python interpreter. The skill cannot run on a SQL warehouse.
 
 Genie Code can be invoked from several surfaces. Only the notebook surface works for config generation:
 
@@ -38,7 +38,7 @@ These three rules guide what the agent does during generation; they do not enfor
 
 1. **Follow the Canonical YAML example in this skill before generating.** Read the [Canonical YAML example](#canonical-yaml-example) section below. Every generated config must match that structure exactly — `vocabulary_lookups` with `resolution` + `source_alias` + `fallback`, `expectations` as `{name, expr}` objects, `{catalog}.{bronze_schema}` placeholders in sources.
 
-2. **Validate before presenting.** After writing the YAML, import the standalone validator (`from validate_yaml_schema import validate`) and call `validate("/Workspace/Users/<your_user>/configs/your.yaml")`. Confirm 0 Pydantic errors. See [Step 4](#step-4--review-edit-and-validate-yaml) for the full 3-step Python pattern (CLI form is the always-safe fallback). If errors exist, fix the YAML and re-validate. Do NOT present the config or any summary to the user until validation passes with 0 errors. **If `executeCode` cannot run Python — e.g., it errors that the runtime is a SQL warehouse, or import/`%pip` operations fail with "Python is not supported" — STOP immediately. Do not retry, do not attempt SQL-only workarounds, do not generate the YAML without validation. Tell the user verbatim: "This skill needs a Python-capable notebook kernel. Open Genie Code from a notebook (any cluster — serverless works) and rerun the same prompt. The catalog browser, Genie Space, and SQL editor surfaces back the agent with a SQL warehouse and cannot execute the Pydantic validator." See [Compute requirements](#compute-requirements-read-before-launching).**
+2. **Validate before presenting.** After writing the YAML, import the standalone validator (`from validate_yaml_schema import validate`) and call `validate("/Workspace/Users/<your_user>/configs/your.yaml")`. Confirm 0 Pydantic errors. See [Step 6](#step-6--review-edit-and-validate-yaml) for the full 3-step Python pattern (CLI form is the always-safe fallback). If errors exist, fix the YAML and re-validate. Do NOT present the config or any summary to the user until validation passes with 0 errors. **If `executeCode` cannot run Python — e.g., it errors that the runtime is a SQL warehouse, or import/`%pip` operations fail with "Python is not supported" — STOP immediately. Do not retry, do not attempt SQL-only workarounds, do not generate the YAML without validation. Tell the user verbatim: "This skill needs a Python-capable notebook kernel. Open Genie Code from a notebook (any cluster — serverless works) and rerun the same prompt. The catalog browser, Genie Space, and SQL editor surfaces back the agent with a SQL warehouse and cannot execute the Pydantic validator." See [Compute requirements](#compute-requirements-read-before-launching).**
 
 3. **Choose the right resolution strategy — ALWAYS query the reference schema, even if an existing config exists.** An existing config may use an outdated resolution strategy. Do NOT copy resolution strategies from old configs without verifying them. Query the reference schema EVERY TIME: `SELECT COUNT(*) FROM {catalog}.{ref_schema}.concept WHERE vocabulary_id = '<vocab>' AND concept_code = '<sample_code>'`. Then apply this decision tree:
    - **Local/institution-specific codes** (race, ethnicity, visit type) that do NOT exist in the reference schema → `resolution: source_to_concept_map`
@@ -71,7 +71,7 @@ Pair with the **snake-case-column-renamer** skill when bronze still uses PascalC
 
 ## Step-by-step workflow
 
-### Step 0 — Scaffold the project (first time only)
+### Step 1 — Scaffold the project (first time only)
 
 Skip this step if your team already has an OMOP build repo. This step is for
 the first time someone on your team is starting an OMOP CDM v5.4 build with
@@ -121,7 +121,7 @@ not as an action it can take.
 3. Connect the project tree to the team's Git repo. The skill works without
    Git, but recovery and audit are much easier with version control.
 4. Pick the first OMOP table to build (most teams start with Person), then
-   proceed to Step 1.
+   proceed to Step 2.
 
 **About existing tables:** if the scaffolder finds OMOP tables already in
 `core_target`, the generated README lists them with two paths offered per
@@ -135,13 +135,106 @@ pipeline (GitHub Actions, Azure DevOps Pipeline, GitLab CI, Jenkins, whatever
 the team uses) handles deploy. The agent's responsibility ends at writing
 validated configs to the project tree.
 
-### Step 1 — Confirm the target OMOP table
+### Step 2 — Confirm target & check existing state
 
-Agree on the OMOP CDM v5.4 target (for example `person`, `visit_occurrence`, `condition_occurrence`). If you came from Step 0, this is a quick re-confirmation of the table you already picked there. Confirm the Unity Catalog names: `<your_catalog>`, `core_omop` for silver, `<your_bronze_schema>` for bronze, `reference` for vocab. Use **three-part** names only: `{catalog}.{schema}.{table}`.
+Before generating any config, the agent reads the current bundle state
+and confirms the target table(s) with the engineer. This is a state-aware
+skill — the agent re-reads bundle state at the start of every flow so
+recent additions (configs, materialized tables, wired tasks) are
+reflected. Confirm Unity Catalog names: `<your_catalog>`, `core_omop`
+for silver, `<your_bronze_schema>` for bronze, `reference` for vocab.
+Use **three-part** names only: `{catalog}.{schema}.{table}`.
+
+**Build order (OMOP DAG, see [`references/omop_dag_dependencies.md`](references/omop_dag_dependencies.md)):**
+
+Round 1: `person`, `care_site`, `provider`, `location` (no dependencies)
+Round 2: `visit_occurrence`, `observation_period` (depend on `person`)
+Round 3: `condition_occurrence`, `procedure_occurrence`, `drug_exposure`, `measurement`, `observation`, `death` (depend on `person` + `visit_occurrence`)
+Round 4: `condition_era`, `drug_era` (depend on Round 3)
+
+The agent reorders multi-table requests into this DAG order automatically.
+Within a single round, ties break alphabetically. Build in dependency
+order — the validator's L3 referential integrity layer needs upstream
+tables to exist.
+
+**If the project is not scaffolded** (no `.omop-skill-version` marker):
+the agent stops and surfaces:
+
+> This directory doesn't look like a scaffolded OMOP project. Run the
+> scaffolder first via Step 1, or point me at the right project path.
+
+**If `configs/<table>.yaml` does NOT exist:** proceed to Step 3 normally.
+This is the v1.4 single-table flow.
+
+**If `configs/<table>.yaml` already exists:** the agent stops and offers
+three sub-paths. The agent's response should look something like:
+
+> I see `configs/person.yaml` already exists in this project. What would
+> you like to do?
+>
+> 1. **Update** — change something specific in the existing config (e.g.,
+>    different vocabulary strategy, additional CASE branches). I'll
+>    regenerate the whole config with your change and describe what
+>    changed.
+>
+> 2. **Replace** — discard the existing config and generate a fresh one
+>    as if Person hadn't been built yet. Useful if the existing config
+>    has drifted significantly or if your bronze schema changed.
+>
+> 3. **Different table** — you meant to build a different table. Which
+>    one?
+
+The agent waits for the engineer's choice. Do not guess intent; do not
+generate speculatively while waiting.
+
+**Sub-path: Update.** See Step 4 (Update workflow).
+
+**Sub-path: Replace.** See Step 5 (Generate workflow). Replace overwrites
+the existing file; the engineer commits the overwrite through their
+normal git workflow.
+
+**Sub-path: Different table.** Re-enter Step 2 with the new target table.
+The classification may detect another existing config — recurse.
+
+**Batch requests.** When the engineer asks for multiple tables in one
+prompt, the agent reads bundle state once and classifies each table.
+The response groups conflicts and non-conflicts:
+
+> Build order is: **Person → Visit_occurrence → Condition_occurrence**
+> (per the OMOP DAG). One conflict: `configs/person.yaml` already exists.
+> For Person — update / replace / different-table? Visit_occurrence and
+> Condition_occurrence don't exist; I'll build them fresh after you
+> resolve the Person path.
+
+**Missing predecessors.** When the requested batch references a table
+whose predecessors aren't in the batch and aren't materialized in
+`core_target` (state level 0 — no config, no task, no table), the
+agent refuses with the gap surfaced:
+
+> You asked to build Condition_occurrence. Its predecessors Person and
+> Visit_occurrence aren't configured yet (no config, no task, no table).
+> Add them to the batch, or build them first?
+
+**Ambiguous extensions.** If `configs/` contains both `<table>.yaml`
+and `<table>.yml`, the agent refuses:
+
+> Both `configs/person.yaml` and `configs/person.yml` exist. The skill
+> ships `.yaml` as canonical. Delete one (or rename it) and I'll proceed.
+
+Once the target is confirmed and any existing-config branches are
+resolved, proceed to Step 3.
+
+### Step 3 — Inspect the bronze source
+
+Run `DESCRIBE TABLE` (or `information_schema.columns`) on the bronze
+table(s). Note column names exactly as they appear in UC (PascalCase or
+snake_case), key columns (the patient identifier, the encounter
+identifier, etc.), and code columns that will need vocabulary resolution.
+YAML expressions must reference the actual column names present in bronze.
 
 #### Discover the bronze source for this target
 
-There is **no setup file to drop before using this skill**. Installing the skill is the only setup. The agent discovers the build context lazily — asks once, verifies against UC, and (optionally) persists what it learned at the end of Step 4 so the next session is a fast path.
+There is **no setup file to drop before using this skill**. Installing the skill is the only setup. The agent discovers the build context lazily — asks once, verifies against UC, and (optionally) persists what it learned at the end of Step 6 so the next session is a fast path.
 
 **Cold-start workflow (first session, no `discovery.yaml` exists yet):**
 
@@ -154,7 +247,7 @@ There is **no setup file to drop before using this skill**. Installing the skill
    ```
 
 3. Ask the user which bronze table maps to the OMOP target you're building (offer a guess from the `SHOW TABLES` output if it's obvious — e.g., `patient` for OMOP `person`, but always confirm).
-4. Proceed to Step 2.
+4. Proceed to Step 5 once the bronze table is confirmed.
 
 **Fast-path workflow (`discovery.yaml` exists in the user workspace):**
 
@@ -170,27 +263,38 @@ table_mappings:
   condition_occurrence: <your_encounter_diagnosis_table>
 ```
 
-This file is an **artifact the agent writes at the end of Step 4 with user consent** (see Step 4's "Persist context" sub-step). It's never a precondition. Users do not edit it manually unless they want to.
-
-**Build order (OMOP DAG, see [`references/omop_dag_dependencies.md`](references/omop_dag_dependencies.md)):**
-
-Round 1: `person`, `care_site`, `provider`, `location` (no dependencies)
-Round 2: `visit_occurrence`, `observation_period` (depend on `person`)
-Round 3: `condition_occurrence`, `procedure_occurrence`, `drug_exposure`, `measurement` (depend on `person` + `visit_occurrence`)
-Round 4: `condition_era`, `drug_era` (depend on Round 3)
-
-Build in dependency order — the validator's L3 referential integrity layer needs upstream tables to exist.
+This file is an **artifact the agent writes at the end of Step 6 with user consent** (see Step 6's "Persist context" sub-step). It's never a precondition. Users do not edit it manually unless they want to.
 
 **Key output from this step:**
 - The actual catalog and bronze schema (verified against UC)
 - The actual bronze table for the OMOP target you're about to build
-- Pass these forward as explicit `--catalog`, `--bronze-schema`, `--bronze-table` to Step 3, OR (fast-path) via `--discovery-file` if an up-to-date `discovery.yaml` exists.
+- Pass these forward as explicit `--catalog`, `--bronze-schema`, `--bronze-table` to Step 5, OR (fast-path) via `--discovery-file` if an up-to-date `discovery.yaml` exists.
 
-### Step 2 — Inspect the bronze source
+### Step 4 — Update workflow
 
-Run `DESCRIBE TABLE` (or `information_schema.columns`) on the bronze table(s). Note column names exactly as they appear in UC (PascalCase or snake_case), key columns (the patient identifier, the encounter identifier, etc.), and code columns that will need vocabulary resolution. YAML expressions must reference the actual column names present in bronze.
+The engineer chose "Update" from Step 2's three sub-paths. The agent
+regenerates the whole config with the requested change, computes a
+structural field-level changelog against the Pydantic schema to ground
+its plain-language summary, and writes the new file with optimistic
+mtime concurrency. The reviewer reads the new file directly — the agent
+does not produce textual `+old/-new` diffs.
 
-### Step 3 — Generate config via `scripts/generate_config.py`
+The full Update workflow content — including the retry-with-fix-forward
+loop on Pydantic validation failures and the response template that
+surfaces the structural changelog — ships in a later phase of this
+release. For the current build, the high-level contract is:
+
+- The original `configs/<table>.yaml` is unchanged on disk while the
+  agent regenerates and validates.
+- After successful Pydantic validation the agent writes the new file
+  atomically; on failure the original is preserved.
+- The agent describes what changed in plain language; the reviewer
+  reads the file directly.
+
+If "Replace" was chosen instead, see Step 5 (Generate workflow). The
+"Different table" sub-path re-enters Step 2 with the new target.
+
+### Step 5 — Generate config via `scripts/generate_config.py`
 
 **Before generating, read `configs/_schema.yaml` for the required YAML structure, then read `configs/person.yaml` as a working example of overall file shape.** All generated configs MUST follow the same structural shape — especially `vocabulary_lookups` (requires `resolution`, `source_alias`, `fallback`) and `expectations` (requires `{name, expr}` objects). For **fact tables** (`condition_occurrence`, `procedure_occurrence`, `drug_exposure`), the structural rules — two-lookup pattern, `domain_id` on both lookups, hash-with-resolved-concept-id surrogate keys — are demonstrated by the [Canonical YAML example](#canonical-yaml-example) below. `configs/person.yaml` is the file-shape template; the inline canonical is the fact-table-rules template. They are not competing canonical poles.
 
@@ -220,7 +324,7 @@ python scripts/generate_config.py \
 
 Requirements: `databricks-sdk`, `pyyaml`. SQL warehouse ID auto-discovers (first running serverless warehouse) — override with `--warehouse-id` or `DATABRICKS_WAREHOUSE_ID`. The script writes a pure pass-through YAML stub matching the shared config schema (see `configs/_schema.yaml`): one `column_mappings` entry per bronze column with `target: snake_case(col), expr: "src.<Col>"`. The agent then rewrites most of `column_mappings` based on the OMOP target columns, the resolution decision tree (MANDATORY rule 3), and the canonical `condition_occurrence` example below. The generator is honest about not knowing your domain semantics — it doesn't pretend.
 
-### Step 4 — Review, edit, and validate YAML
+### Step 6 — Review, edit, and validate YAML
 
 Starting from the pure pass-through scaffold emitted by `scripts/generate_config.py`, rewrite or fill in:
 
@@ -338,9 +442,11 @@ print(f"Updated: {path}")
 
 The offer is a courtesy, not a requirement — if the user declines, never ask again in the same session. If the user accepts and you've already added the OMOP→bronze mapping for the table you just generated, you do NOT need to re-ask on the next OMOP target in the same session — read the file, append the new mapping, save.
 
-### Step 5 — Run the pipeline (dual mechanism)
+### Step 7 — Run the pipeline and validate the materialized table
 
-With the YAML validated (Step 4), trigger the pipeline so it materializes the OMOP table.
+With the YAML validated (Step 6), trigger the pipeline so it materializes the OMOP table, then run the post-build validator against the result. This step folds the v1.x "run" and "validate-output" steps into a single flow because they're tightly coupled — the validator only runs after the table materializes, and a validator failure sends you back to the pipeline run.
+
+#### Run the pipeline (dual mechanism)
 
 - **Lakeflow Pipelines Editor:** open the pipeline in the Databricks UI and click **Run**. Set pipeline parameters (for example `table_name`) in the UI if your bundle passes them via Spark conf.
 - **Notebook or local automation:** run `scripts/run_pipeline.py` with the pipeline ID or name, target OMOP table name for `parameters`, and optional `--full-refresh`:
@@ -356,7 +462,7 @@ python scripts/run_pipeline.py \
 
 If you only know the pipeline name, use `--pipeline-name` (the script resolves the ID via `list_pipelines`). The script polls every 10 seconds for up to 30 minutes and prints update state and events.
 
-### Step 6 — Validate via `scripts/validate_omop.py`
+#### Validate via `scripts/validate_omop.py`
 
 Once the pipeline run is `COMPLETED` and the OMOP table is materialized, validate it:
 
@@ -368,9 +474,9 @@ python scripts/validate_omop.py \
 
 `--catalog` and `--schema` are optional overrides; by default the FQN segments after `--table` are used.
 
-The script reports pass/fail for five layers (schema, primary-key uniqueness, concept referential integrity, domain conformance where defined, completeness / null-rate). A non-zero exit code means at least one layer failed — fix the config or the upstream data and re-run Step 5 before proceeding to Step 7.
+The script reports pass/fail for five layers (schema, primary-key uniqueness, concept referential integrity, domain conformance where defined, completeness / null-rate). A non-zero exit code means at least one layer failed — fix the config or the upstream data, re-run the pipeline, and re-validate before proceeding to Step 8.
 
-### Step 7 — Wire the table into the OMOP job DAG
+### Step 8 — Wire the table into the OMOP job DAG
 
 Once the pipeline runs green, `validate_omop.py` passes 5/5 layers, and a
 reviewer (data engineer + clinical informaticist or OMOP-experienced peer)
@@ -379,7 +485,7 @@ has accepted the materialized table, wire the table into the orchestrated
 The 5/5 validator confirms structural well-formedness; reviewer acceptance
 confirms OMOP fidelity — the clinical and source-data choices were right.
 
-If you used Step 0 to scaffold, the placeholder is already there with correct
+If you used Step 1 to scaffold, the placeholder is already there with correct
 `depends_on` from the OMOP DAG. Find the table in the right Round section,
 remove the leading `# ` from each line of its task block, and validate the
 bundle:
@@ -391,7 +497,7 @@ databricks bundle validate -t production
 Commit the change through the team's normal Git workflow. The CI/CD pipeline
 handles deploy.
 
-If you skipped Step 0 (the team has an existing repo without scaffolded
+If you skipped Step 1 (the team has an existing repo without scaffolded
 placeholders), add a new task block matching the shape:
 
 ```yaml
@@ -592,7 +698,7 @@ If any fixtures fail after your change, the change broke the skill's contract. F
 ## References
 
 - [`references/canonical_examples.md`](references/canonical_examples.md) — `person` (dimension) and `measurement` (Maps to + Maps to unit) canonical YAML examples
-- [`references/dag_wiring.md`](references/dag_wiring.md) — Step 7 walkthrough for adding tasks to `resources/jobs.yml`
+- [`references/dag_wiring.md`](references/dag_wiring.md) — Step 8 walkthrough for adding tasks to `resources/jobs.yml`
 - [`references/omop_cdm_v54_spec.md`](references/omop_cdm_v54_spec.md) — required columns, keys, FKs, concept domains (clinical scope)
 - [`references/ehr_to_omop_mappings.md`](references/ehr_to_omop_mappings.md) — bronze → OMOP table and column mapping notes
 - [`references/vocabulary_domains.md`](references/vocabulary_domains.md) — domain ↔ vocabulary patterns and join strategies
