@@ -87,7 +87,7 @@ def _validate_silver_target(silver_target: str) -> None:
 
     Defensive guard against malformed --silver-target inputs that would otherwise
     crash later inside _render_databricks_yml's `silver_target.split('.')[1]`
-    with an IndexError, or silently render the wrong silver_schema if 3+ parts
+    with an IndexError, or silently render the wrong core_schema if 3+ parts
     were supplied.
     """
     parts = silver_target.split(".")
@@ -101,7 +101,8 @@ def _render_databricks_yml(
     bundle_target: str, silver_target: str, project_name: str
 ) -> str:
     catalog = bundle_target.split(".")[0]
-    silver_schema = silver_target.split(".")[1]
+    config_volume = bundle_target.split(".")[2]
+    core_schema = silver_target.split(".")[1]
     return f"""bundle:
   name: {project_name}
 
@@ -112,12 +113,18 @@ variables:
   bronze_schema:
     description: Bronze schema with EHR source tables
     default: bronze_clinical
-  silver_schema:
-    description: Silver schema where OMOP tables materialize
-    default: {silver_schema}
+  core_schema:
+    description: Schema where OMOP core tables materialize (silver layer)
+    default: {core_schema}
   ref_schema:
     description: OHDSI vocabulary reference schema
     default: reference
+  config_volume:
+    description: UC Volume holding YAML configs for the SDP pipelines
+    default: {config_volume}
+  notification_email:
+    description: Email for pipeline failure notifications (replace with your team)
+    default: <CHANGEME — your-team-email@example.com>
 
 include:
   - resources/*.yml
@@ -151,7 +158,7 @@ through the skill from scratch.
 """
 
     table_list = "\n".join(f"- `{t}`" for t in tables)
-    silver_schema_name = silver_target.split(".")[1]
+    core_schema_name = silver_target.split(".")[1]
     return f"""## Existing OMOP tables in `{silver_target}`
 
 {table_list}
@@ -166,9 +173,9 @@ OMOP fidelity review. You have two paths for each:
 
 2. **Rebuild via the skill.** Generate a config through the per-table workflow.
    The pipeline will materialize the new version into a side-by-side schema
-   (set `silver_schema` in `databricks.yml` to something like `omop_skill_built`
+   (set `core_schema` in `databricks.yml` to something like `omop_skill_built`
    while rebuilding). Validate the new version against the existing one before
-   cutting over by changing `silver_schema` back to `{silver_schema_name}`.
+   cutting over by changing `core_schema` back to `{core_schema_name}`.
 
 The skill will not auto-generate stubs for these tables. You decide per table.
 """
