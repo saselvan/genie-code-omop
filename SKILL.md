@@ -5,12 +5,13 @@ license: MIT
 compatibility: Designed for Databricks Genie Code Agent mode launched from a notebook with a Python-capable cluster (serverless or classic). Genie Code launched from the catalog browser, a Genie Space, or the SQL editor is backed by a SQL warehouse and CANNOT run this skill's Step 4 Pydantic validator — see "Compute requirements" below. Requires databricks-sdk, pyyaml, pydantic. Run pipeline triggering uses Pipelines Editor native run when available, scripts/run_pipeline.py from notebooks.
 metadata:
   author: Samuel Selvan (Databricks SA)
-  version: "1.4"
+  version: "1.6"
   built_for_session: "2026-04-29 OMOP transform framework hands-on"
   v1_1_notes: "Vendor-neutralized; standalone YAML validator (no host-repo cd); workspace-scope deploy; canonical example flipped to fact-table shape."
   v1_2_notes: "STCM guidance reframed: source_to_concept_map UC table is the runtime source of truth; CSV seed at seed_data/source_to_concept_map_custom.csv is one of two write paths (alongside direct SQL/MERGE), not the only path. Added 'Adding source_to_concept_map mappings' section."
   v1_3_notes: "Compute requirements made explicit: skill requires a Python-capable notebook kernel; catalog browser / Genie Space / SQL editor surfaces (SQL warehouse compute) cannot run the Pydantic validator. Added 'Compute requirements' section. MANDATORY rule 2 now short-circuits with a verbatim user message instead of retrying when Python is unavailable."
   v1_4_notes: "Path A canonical example switched from INSERT to MERGE INTO with composite key (source_code, source_vocabulary_id) — matches src/01_load_vocabulary.py's verb so framework is internally consistent on STCM writes; idempotent on re-runs. INSERT demoted to 'first-bootstrap-only' aside."
+  v1_6_notes: "Step 0 added for first-time project scaffolding via scripts/scaffold_omop_project.py (existing Step 0 'Discover source schema' content preserved as Step 1 subsection). Step 7 body tightened to inline scaffold-aware vs hand-authored DAG-wiring guidance with mandatory rules (full_refresh, depends_on, validate-before-deploy)."
 ---
 
 # OMOP Pipeline Builder
@@ -70,7 +71,75 @@ Pair with the **snake-case-column-renamer** skill when bronze still uses PascalC
 
 ## Step-by-step workflow
 
-### Step 0 — Discover source schema
+### Step 0 — Scaffold the project (first time only)
+
+Skip this step if your team already has an OMOP build repo. This step is for
+the first time someone on your team is starting an OMOP CDM v5.4 build with
+this skill.
+
+The scaffolder generates a working DAB-shaped project: bundle config, jobs DAG
+with all 14 OMOP tables as commented placeholders, src/ boilerplate, empty
+configs/ folder, seed_data template, and a README. It also probes the silver
+schema for existing OMOP tables and surfaces them so the team can decide per
+table whether to keep them as-is or rebuild them through the skill.
+
+**To scaffold:** ask the agent something like "scaffold a new OMOP project."
+The agent collects three things conversationally and asks the customer to
+confirm each before writing files:
+
+1. **`project_path`** — filesystem path where the project tree is written.
+   Customer-chosen. UC Volume mount path strongly recommended:
+   `/Volumes/<catalog>/<schema>/<volume>/`. The customer picks the catalog,
+   schema, and volume name that fits their UC governance.
+
+2. **`bundle_target`** — three-part UC name where the bundle deploys:
+   `<catalog>.<schema>.<volume>`. **The Volume must already exist.** The
+   scaffolder verifies before writing. If the Volume is missing, the
+   scaffolder raises `VolumeNotFoundError` and the agent asks the customer
+   to create the Volume through standard UC governance (Catalog Explorer, SQL
+   `CREATE VOLUME`, or their platform team), then resumes once the customer
+   confirms.
+
+3. **`silver_target`** — two-part UC name where OMOP tables live or will
+   materialize: `<catalog>.<schema>`. Defaults to same catalog as
+   `bundle_target`, schema `core_omop`. Override if the engineering and
+   clinical catalogs are separated for governance reasons.
+
+The agent runs `scripts/scaffold_omop_project.py` with the confirmed parameters
+and reports back what was written.
+
+**The scaffolder does NOT create UC objects.** It does not create catalogs,
+schemas, or Volumes. UC governance is owned by the customer's platform team
+and admins, not by this skill. The agent surfaces missing Volumes as an ask,
+not as an action it can take.
+
+**After scaffold:**
+
+1. Replace the `<CHANGEME>` placeholder in the generated `databricks.yml` with
+   the workspace URL.
+2. Validate the scaffold deploys cleanly: `databricks bundle validate -t production`.
+3. Connect the project tree to the team's Git repo. The skill works without
+   Git, but recovery and audit are much easier with version control.
+4. Pick the first OMOP table to build (most teams start with Person), then
+   proceed to Step 1.
+
+**About existing tables:** if the scaffolder finds OMOP tables already in
+`silver_target`, the generated README lists them with two paths offered per
+table (keep-as-is or rebuild-via-skill). The skill does not auto-generate
+configs for existing tables — the team decides per table. See the generated
+README section "Existing OMOP tables" for the rebuild workflow using a
+side-by-side silver schema.
+
+**About deploy:** the skill does not deploy the bundle. The customer's CI/CD
+pipeline (GitHub Actions, Azure DevOps Pipeline, GitLab CI, Jenkins, whatever
+the team uses) handles deploy. The agent's responsibility ends at writing
+validated configs to the project tree.
+
+### Step 1 — Confirm the target OMOP table
+
+Agree on the OMOP CDM v5.4 target (for example `person`, `visit_occurrence`, `condition_occurrence`). Confirm the Unity Catalog names: `<your_catalog>`, `core_omop` for silver, `<your_bronze_schema>` for bronze, `reference` for vocab. Use **three-part** names only: `{catalog}.{schema}.{table}`.
+
+#### Discover the bronze source for this target
 
 There is **no setup file to drop before using this skill**. Installing the skill is the only setup. The agent discovers the build context lazily — asks once, verifies against UC, and (optionally) persists what it learned at the end of Step 4 so the next session is a fast path.
 
@@ -85,7 +154,7 @@ There is **no setup file to drop before using this skill**. Installing the skill
    ```
 
 3. Ask the user which bronze table maps to the OMOP target you're building (offer a guess from the `SHOW TABLES` output if it's obvious — e.g., `patient` for OMOP `person`, but always confirm).
-4. Proceed to Step 1.
+4. Proceed to Step 2.
 
 **Fast-path workflow (`discovery.yaml` exists in the user workspace):**
 
@@ -112,14 +181,10 @@ Round 4: `condition_era`, `drug_era` (depend on Round 3)
 
 Build in dependency order — the validator's L3 referential integrity layer needs upstream tables to exist.
 
-**Key output from Step 0:**
+**Key output from this step:**
 - The actual catalog and bronze schema (verified against UC)
 - The actual bronze table for the OMOP target you're about to build
 - Pass these forward as explicit `--catalog`, `--bronze-schema`, `--bronze-table` to Step 3, OR (fast-path) via `--discovery-file` if an up-to-date `discovery.yaml` exists.
-
-### Step 1 — Confirm the target OMOP table
-
-Agree on the OMOP CDM v5.4 target (for example `person`, `visit_occurrence`, `condition_occurrence`). Confirm the Unity Catalog names: `<your_catalog>`, `core_omop` for silver, `<your_bronze_schema>` for bronze, `reference` for vocab. Use **three-part** names only: `{catalog}.{schema}.{table}`.
 
 ### Step 2 — Inspect the bronze source
 
@@ -307,9 +372,42 @@ The script reports pass/fail for five layers (schema, primary-key uniqueness, co
 
 ### Step 7 — Wire the table into the OMOP job DAG
 
-Once the pipeline runs green, `validate_omop.py` passes 5/5 layers, and a reviewer (data engineer + clinical informaticist or OMOP-experienced peer) has accepted the materialized table, add it as a task in `resources/jobs.yml` so it runs as part of the orchestrated `omop_full_build` job. The 5/5 validator confirms the table is structurally well-formed; reviewer acceptance confirms OMOP fidelity — the clinical and source-data choices were right.
+Once the pipeline runs green and `validate_omop.py` passes 5/5 layers, wire
+the table into the orchestrated `omop_full_build` job by uncommenting its
+placeholder in `resources/jobs.yml`.
 
-The OMOP-specific rules (`full_refresh: true` mandatory, explicit `depends_on`, `bundle validate` gate) and step-by-step workflow live in [`references/dag_wiring.md`](references/dag_wiring.md). The dependency chart for build order lives in [`references/omop_dag_dependencies.md`](references/omop_dag_dependencies.md).
+If you used Step 0 to scaffold, the placeholder is already there with correct
+`depends_on` from the OMOP DAG. Find the table in the right Round section,
+remove the leading `# ` from each line of its task block, and validate the
+bundle:
+
+```bash
+databricks bundle validate -t production
+```
+
+Commit the change through the team's normal Git workflow. The CI/CD pipeline
+handles deploy.
+
+If you skipped Step 0 (the team has an existing repo without scaffolded
+placeholders), add a new task block matching the shape:
+
+```yaml
+- task_key: <table_name>
+  depends_on:
+    - task_key: <predecessor_1>
+    - task_key: <predecessor_2>
+  pipeline_task:
+    pipeline_id: ${resources.pipelines.omop_<table_name>.id}
+    full_refresh: true
+```
+
+Mandatory rules (apply whether scaffolded or hand-authored):
+
+- `full_refresh: true` on every OMOP task. OMOP rebuilds are batch snapshots; incremental refresh would silently double-count rows.
+- List every upstream OMOP table the pipeline reads in `depends_on`, including transitive predecessors. Self-documenting beats minimal.
+- The pipeline resource (`${resources.pipelines.omop_<table>.id}`) must exist in `resources/pipeline_generic.yml` or a sibling resource file. If it doesn't, add it before editing `jobs.yml`.
+
+Validate after every edit. Don't deploy until validation is clean.
 
 ## Canonical YAML example
 
