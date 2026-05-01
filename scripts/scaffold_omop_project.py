@@ -134,6 +134,7 @@ targets:
     mode: production
     workspace:
       host: <CHANGEME — replace with your workspace URL>
+      root_path: /Workspace/Users/${{workspace.current_user.userName}}/.bundle/${{bundle.name}}/${{bundle.target}}
 """
 
 
@@ -198,7 +199,8 @@ OMOP CDM v5.4 build project, scaffolded by `omop-pipeline-builder`.
 ## What's here
 
 - `databricks.yml` — bundle root with catalog/schema variables
-- `resources/jobs.yml` — DAG with all 14 OMOP tables as commented placeholders
+- `resources/jobs.yml` — DAG with `person` uncommented as the first task; the
+  other 13 OMOP CDM v5.4 tables ship as commented placeholders
 - `resources/pipeline_generic.yml` — parameterized SDP pipeline definition
 - `src/` — pipeline code (config_loader, vocab_resolver, transform pipeline, validators)
 - `configs/` — empty; YAML configs land here as you build each table
@@ -232,6 +234,26 @@ OMOP tables materialize in: `{silver_target}`
 6. Review and ratify the draft, then commit through your team's normal Git/CI flow.
 7. After deploy, ask the agent: "Validate the Person table." It will run the
    5-layer OMOP fidelity validator.
+
+## Production deploy
+
+This scaffold ships with per-user deploy paths:
+
+```yaml
+workspace:
+  root_path: /Workspace/Users/${{workspace.current_user.userName}}/.bundle/${{bundle.name}}/${{bundle.target}}
+```
+
+Per-user paths are safe for local development and solo work — each contributor's deploy lives under their own workspace path. **For team CI/CD deploys, override the production target's `root_path` to a shared location** so all deploys converge on one canonical artifact:
+
+```yaml
+targets:
+  production:
+    workspace:
+      root_path: /Workspace/Shared/.bundle/${{bundle.name}}/${{bundle.target}}
+```
+
+Use a service principal path (`/Workspace/Service Principals/<sp-id>/...`) if your CI runs as a service principal and you want deploys isolated from human users.
 
 ## Workflow notes
 
