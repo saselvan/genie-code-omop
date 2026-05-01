@@ -1,0 +1,129 @@
+# OMOP Full Build DAG — all 14 tables as commented placeholders.
+# Uncomment each task as you ship its config and validate the table.
+# DAG dependencies follow Round 1-4 ordering from
+# .assistant/skills/omop-pipeline-builder/references/omop_dag_dependencies.md
+#
+# IMPORTANT: every task uses full_refresh=true. OMOP rebuilds are batch
+# snapshots; incremental refresh would silently double-count rows.
+#
+# NOTE: With all tasks commented out, `databricks bundle validate` will
+# report "no tasks defined" or similar. That's expected — uncomment your
+# first task (typically person, since most other tables depend on it) once
+# its config and pipeline resource are shipped.
+
+resources:
+  jobs:
+    omop_full_build:
+      name: OMOP Full Build
+      tasks:
+        # ─────────────────────────────────────────────────────────────
+        # Round 1 — Dimension tables (no dependencies)
+        # ─────────────────────────────────────────────────────────────
+
+        # - task_key: person
+        #   pipeline_task:
+        #     pipeline_id: ${resources.pipelines.omop_person.id}
+        #     full_refresh: true
+
+        # - task_key: care_site
+        #   pipeline_task:
+        #     pipeline_id: ${resources.pipelines.omop_care_site.id}
+        #     full_refresh: true
+
+        # - task_key: provider
+        #   pipeline_task:
+        #     pipeline_id: ${resources.pipelines.omop_provider.id}
+        #     full_refresh: true
+
+        # - task_key: location
+        #   pipeline_task:
+        #     pipeline_id: ${resources.pipelines.omop_location.id}
+        #     full_refresh: true
+
+        # ─────────────────────────────────────────────────────────────
+        # Round 2 — Visit infrastructure
+        # ─────────────────────────────────────────────────────────────
+
+        # - task_key: visit_occurrence
+        #   depends_on:
+        #     - task_key: person
+        #   pipeline_task:
+        #     pipeline_id: ${resources.pipelines.omop_visit_occurrence.id}
+        #     full_refresh: true
+
+        # - task_key: observation_period
+        #   depends_on:
+        #     - task_key: person
+        #     - task_key: visit_occurrence
+        #   pipeline_task:
+        #     pipeline_id: ${resources.pipelines.omop_observation_period.id}
+        #     full_refresh: true
+
+        # ─────────────────────────────────────────────────────────────
+        # Round 3 — Clinical fact tables
+        # ─────────────────────────────────────────────────────────────
+
+        # - task_key: condition_occurrence
+        #   depends_on:
+        #     - task_key: person
+        #     - task_key: visit_occurrence
+        #   pipeline_task:
+        #     pipeline_id: ${resources.pipelines.omop_condition_occurrence.id}
+        #     full_refresh: true
+
+        # - task_key: procedure_occurrence
+        #   depends_on:
+        #     - task_key: person
+        #     - task_key: visit_occurrence
+        #   pipeline_task:
+        #     pipeline_id: ${resources.pipelines.omop_procedure_occurrence.id}
+        #     full_refresh: true
+
+        # - task_key: drug_exposure
+        #   depends_on:
+        #     - task_key: person
+        #     - task_key: visit_occurrence
+        #   pipeline_task:
+        #     pipeline_id: ${resources.pipelines.omop_drug_exposure.id}
+        #     full_refresh: true
+
+        # - task_key: measurement
+        #   depends_on:
+        #     - task_key: person
+        #     - task_key: visit_occurrence
+        #   pipeline_task:
+        #     pipeline_id: ${resources.pipelines.omop_measurement.id}
+        #     full_refresh: true
+
+        # - task_key: observation
+        #   depends_on:
+        #     - task_key: person
+        #     - task_key: visit_occurrence
+        #   pipeline_task:
+        #     pipeline_id: ${resources.pipelines.omop_observation.id}
+        #     full_refresh: true
+
+        # - task_key: death
+        #   depends_on:
+        #     - task_key: person
+        #   pipeline_task:
+        #     pipeline_id: ${resources.pipelines.omop_death.id}
+        #     full_refresh: true
+
+        # ─────────────────────────────────────────────────────────────
+        # Round 4 — Era roll-ups
+        # ─────────────────────────────────────────────────────────────
+
+        # - task_key: condition_era
+        #   depends_on:
+        #     - task_key: condition_occurrence
+        #   pipeline_task:
+        #     pipeline_id: ${resources.pipelines.omop_condition_era.id}
+        #     full_refresh: true
+
+        # - task_key: drug_era
+        #   depends_on:
+        #     - task_key: drug_exposure
+        #   pipeline_task:
+        #     pipeline_id: ${resources.pipelines.omop_drug_era.id}
+        #     full_refresh: true
