@@ -16,15 +16,20 @@ Step 3) but never blocks the write.
 Decision 11: agent writes, engineer commits. The writer does not
 ``git add`` or ``git commit``.
 
-This file ships the Step-1 happy-path slice only:
+This file ships the Step 1 + 2 + 3 surface:
   - greenfield write (file does not exist)
   - bytes-for-bytes preservation
-  - ``WriteResult`` populated with placeholders for git_warning /
-    mtime_warning (Steps 3 + 4 fill these in)
+  - overwrite handling (FileExistsError when ``overwrite=False``,
+    atomic replace when ``overwrite=True``)
+  - atomic write via tempfile + ``os.replace`` (no partial-write
+    corruption; original preserved on any failure)
+  - Git status surfacing in ``WriteResult.git_warning``: ``None`` for
+    git'd projects, honest Decision-10 text for non-Git'd projects,
+    "version-control state unknown" for probe failures
+  - ``WriteResult.mtime_warning`` is still a placeholder (Step 4)
 
-Atomic-write semantics (Step 2), overwrite handling (Step 2), Git
-integration (Step 3), and ``expected_mtime`` concurrency (Step 4) are
-added by subsequent commits in this phase.
+``expected_mtime`` concurrency checking (Step 4) is added by the
+next commit in this phase.
 
 Auth boilerplate not applicable (pure filesystem; no SDK calls).
 """
@@ -37,6 +42,15 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+# Same-skill internal import: bundle_state houses the Git probe Phase 1
+# landed (the original Phase 3 spec called for it under
+# _workspace_probes, but Phase 1 kept it in bundle_state because the
+# probe is a local-filesystem concern, not a workspace/SDK concern;
+# spec deviation documented in SESSION-STATE Phase 3 handoff). We
+# import the private symbol on purpose — both modules ship together
+# in this skill and the boundary is ours to draw.
+from bundle_state import _probe_git_status
+
 # Canonical lowercase snake_case regex — matches Phase 2's
 # bundle_state._TARGET_TABLE_RE. Duplicated rather than imported to keep
 # config_writer.py independent of bundle_state's import graph (which
@@ -45,6 +59,18 @@ from pathlib import Path
 # both consume could deduplicate, but for now a one-line duplication is
 # the lowest-risk choice.
 _TARGET_TABLE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+# Decision-10 honest warning text for non-Git'd projects. Verbatim from
+# the Phase 3 spec — names cloud-side storage versioning as the
+# alternative because the skill itself ships no snapshot mechanism.
+# The text is informational only; the writer never blocks on this.
+_GIT_WARNING_NOT_A_REPO = (
+    "Project is not under git version control. The skill does not snapshot "
+    "configs — without git or cloud-side storage versioning, this overwrite "
+    "is not recoverable. Recommended: connect this project to git before "
+    "further updates. Alternative: ask your platform team to enable "
+    "versioning on the storage account backing this Volume."
+)
 
 
 @dataclass
@@ -89,7 +115,7 @@ def write_config(
 ) -> WriteResult:
     """Write a YAML config to ``<project_path>/configs/<target_table>.yaml``.
 
-    **Step 1 + 2 surface:**
+    **Step 1 + 2 + 3 surface:**
 
     - Validates ``target_table`` against the canonical lowercase regex
       ``^[a-z][a-z0-9_]*$``; raises :class:`ValueError` on mismatch.
@@ -118,16 +144,22 @@ def write_config(
       optional ``expected_mtime`` checking that turns a concurrent
       modification into a :class:`MtimeMismatchError` instead of a
       silent overwrite — but only when the caller opts in.
+    - **Git status surfacing.** AFTER the write succeeds, runs a
+      best-effort ``git status`` probe. If the project is under git,
+      ``WriteResult.git_warning`` stays ``None`` — the freshly-written
+      file showing up as uncommitted is the expected state. If the
+      project is NOT under git, sets ``git_warning`` to the
+      Decision-10 honest text naming cloud-side storage versioning as
+      the alternative. If the probe itself fails (no git binary,
+      timeout, etc.), sets a "version-control state unknown" message
+      that names the underlying reason.
 
-    **Future-step surface (NOT IMPLEMENTED IN STEP 2):**
+    **Future-step surface (NOT IMPLEMENTED IN STEP 3):**
 
     - ``expected_mtime``: Step 4 — gated on Phase 0a's FUSE spike
       result (this build ships in **STABLE** mode per Phase 0a's
       SESSION-STATE entry). Will raise :class:`MtimeMismatchError` on
       drift. Currently accepted but unused.
-    - ``git_warning`` field of the return value: Step 3 — informational
-      text surfaced when the project isn't under git. Currently always
-      ``None``.
 
     **Platform notes:**
 
@@ -154,7 +186,8 @@ def write_config(
     Returns:
         :class:`WriteResult` describing the write. ``overwrote_existing``
         is True iff ``overwrite=True`` and the target file existed
-        before the write.
+        before the write. ``git_warning`` is populated per the rules in
+        :func:`_resolve_git_warning`.
 
     Raises:
         ValueError: ``target_table`` does not match the canonical regex.
@@ -181,12 +214,53 @@ def write_config(
     encoded = yaml_content.encode("utf-8")
     _atomic_write_bytes(configs_dir, target_path, encoded, target_table)
 
+    git_warning = _resolve_git_warning(project_path)
+
     return WriteResult(
         config_path=str(target_path),
         bytes_written=len(encoded),
         overwrote_existing=pre_existing,
-        git_warning=None,
+        git_warning=git_warning,
         mtime_warning=None,
+    )
+
+
+def _resolve_git_warning(project_path: str) -> str | None:
+    """Map the bundle_state git probe result to a write-side warning string.
+
+    Three outcomes:
+
+    1. The project IS a git repo (regardless of clean / dirty state) —
+       returns ``None``. The freshly-written file showing up as
+       uncommitted is the expected state; we don't editorialize.
+
+    2. The project is NOT a git repo (probe returned
+       ``"Not a git repository"``) — returns the verbatim
+       Decision-10 honest warning text naming cloud-side storage
+       versioning as the alternative.
+
+    3. The probe itself failed (no git binary, timeout, OS error,
+       unexpected non-zero return code) — returns an honest
+       "version-control state is unknown" message that names the
+       underlying reason. The write itself succeeded; we surface the
+       skip reason so the agent can decide whether to escalate.
+    """
+    git_status, skip_reason = _probe_git_status(project_path)
+
+    if git_status.is_git_repo:
+        return None
+
+    if skip_reason == "Not a git repository":
+        return _GIT_WARNING_NOT_A_REPO
+
+    # The probe reported is_git_repo=False AND the reason is something
+    # other than "not a repo" — meaning the probe couldn't determine
+    # repo status (no git binary, timeout, OS error). Be honest with
+    # the agent about that.
+    reason = skip_reason or "unknown reason"
+    return (
+        f"Git status check failed: {reason}. "
+        "Write succeeded but version-control state is unknown."
     )
 
 
