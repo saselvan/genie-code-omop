@@ -92,7 +92,7 @@ confirm each before writing files:
    `/Volumes/<catalog>/<schema>/<volume>/`. The customer picks the catalog,
    schema, and volume name that fits their UC governance.
 
-2. **`bundle_target`** — three-part UC name where the bundle deploys:
+2. **`volume_target`** — three-part UC name where the bundle deploys:
    `<catalog>.<schema>.<volume>`. **The Volume must already exist.** The
    scaffolder verifies before writing. If the Volume is missing, the
    scaffolder raises `VolumeNotFoundError` and the agent asks the customer
@@ -100,9 +100,9 @@ confirm each before writing files:
    `CREATE VOLUME`, or their platform team), then resumes once the customer
    confirms.
 
-3. **`silver_target`** — two-part UC name where OMOP tables live or will
+3. **`core_target`** — two-part UC name where OMOP tables live or will
    materialize: `<catalog>.<schema>`. Defaults to same catalog as
-   `bundle_target`, schema `core_omop`. Override if the engineering and
+   `volume_target`, schema `core_omop`. Override if the engineering and
    clinical catalogs are separated for governance reasons.
 
 The agent runs `scripts/scaffold_omop_project.py` with the confirmed parameters
@@ -124,7 +124,7 @@ not as an action it can take.
    proceed to Step 1.
 
 **About existing tables:** if the scaffolder finds OMOP tables already in
-`silver_target`, the generated README lists them with two paths offered per
+`core_target`, the generated README lists them with two paths offered per
 table (keep-as-is or rebuild-via-skill). The skill does not auto-generate
 configs for existing tables — the team decides per table. See the generated
 README section "Existing OMOP tables" for the rebuild workflow using a

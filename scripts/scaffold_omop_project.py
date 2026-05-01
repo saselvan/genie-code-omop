@@ -14,7 +14,7 @@ The scaffolder verifies the target UC Volume exists before writing. If the
 Volume is missing, it raises VolumeNotFoundError; the agent surfaces this to
 the customer and asks them to create the Volume via UC governance, then resumes.
 
-The scaffolder probes the silver_target schema for existing OMOP tables and
+The scaffolder probes the core_target schema for existing OMOP tables and
 surfaces them in the generated README so the engineer can decide per table:
 keep-as-is or rebuild via the skill. It does NOT auto-generate stub configs for
 existing tables. It does NOT create catalogs, schemas, or Volumes.
@@ -48,14 +48,14 @@ class VolumeNotFoundError(Exception):
     (Catalog Explorer, SQL CREATE VOLUME, or their platform team).
     """
 
-    def __init__(self, bundle_target: str, underlying_reason: str):
-        self.bundle_target = bundle_target
+    def __init__(self, volume_target: str, underlying_reason: str):
+        self.volume_target = volume_target
         self.underlying_reason = underlying_reason
         super().__init__(
-            f"UC Volume '{bundle_target}' not found or not accessible.\n"
+            f"UC Volume '{volume_target}' not found or not accessible.\n"
             f"  Reason: {underlying_reason}\n"
             f"  Action: Ask your UC admin to create the Volume, or run:\n"
-            f"    CREATE VOLUME IF NOT EXISTS {bundle_target};\n"
+            f"    CREATE VOLUME IF NOT EXISTS {volume_target};\n"
             f"  Then re-run the scaffolder."
         )
 
@@ -65,44 +65,44 @@ class ScaffoldResult:
     """What the scaffolder reports back to the agent."""
 
     project_path: str
-    bundle_target: str
-    silver_target: str
+    volume_target: str
+    core_target: str
     existing_tables: list[str]
     detection_skipped_reason: str | None
     files_written: int
 
 
-def _default_silver_target(bundle_target: str) -> str:
-    parts = bundle_target.split(".")
+def _default_core_target(volume_target: str) -> str:
+    parts = volume_target.split(".")
     if len(parts) < 2:
         raise ValueError(
-            "bundle_target must be at least catalog.schema to derive a default "
-            f"silver_target, got: {bundle_target}"
+            "volume_target must be at least catalog.schema to derive a default "
+            f"core_target, got: {volume_target}"
         )
     return f"{parts[0]}.core_omop"
 
 
-def _validate_silver_target(silver_target: str) -> None:
-    """Raises ValueError if silver_target isn't exactly two parts (catalog.schema).
+def _validate_core_target(core_target: str) -> None:
+    """Raises ValueError if core_target isn't exactly two parts (catalog.schema).
 
-    Defensive guard against malformed --silver-target inputs that would otherwise
-    crash later inside _render_databricks_yml's `silver_target.split('.')[1]`
+    Defensive guard against malformed --core-target inputs that would otherwise
+    crash later inside _render_databricks_yml's `core_target.split('.')[1]`
     with an IndexError, or silently render the wrong core_schema if 3+ parts
     were supplied.
     """
-    parts = silver_target.split(".")
+    parts = core_target.split(".")
     if len(parts) != 2:
         raise ValueError(
-            f"silver_target must be two-part catalog.schema, got: {silver_target}"
+            f"core_target must be two-part catalog.schema, got: {core_target}"
         )
 
 
 def _render_databricks_yml(
-    bundle_target: str, silver_target: str, project_name: str
+    volume_target: str, core_target: str, project_name: str
 ) -> str:
-    catalog = bundle_target.split(".")[0]
-    config_volume = bundle_target.split(".")[2]
-    core_schema = silver_target.split(".")[1]
+    catalog = volume_target.split(".")[0]
+    config_volume = volume_target.split(".")[2]
+    core_schema = core_target.split(".")[1]
     return f"""bundle:
   name: {project_name}
 
@@ -139,28 +139,28 @@ targets:
 
 
 def _render_existing_tables_section(
-    silver_target: str, tables: list[str], skip_reason: str | None
+    core_target: str, tables: list[str], skip_reason: str | None
 ) -> str:
     if skip_reason:
-        return f"""## Existing OMOP tables in `{silver_target}`
+        return f"""## Existing OMOP tables in `{core_target}`
 
 Detection skipped: {skip_reason}
 
-Run `databricks tables list {silver_target}` after fixing the issue, then
+Run `databricks tables list {core_target}` after fixing the issue, then
 update this section manually before deciding which tables to rebuild via
 the skill.
 """
 
     if not tables:
-        return f"""## Existing OMOP tables in `{silver_target}`
+        return f"""## Existing OMOP tables in `{core_target}`
 
 None detected. This is a greenfield build — every table will be authored
 through the skill from scratch.
 """
 
     table_list = "\n".join(f"- `{t}`" for t in tables)
-    core_schema_name = silver_target.split(".")[1]
-    return f"""## Existing OMOP tables in `{silver_target}`
+    core_schema_name = core_target.split(".")[1]
+    return f"""## Existing OMOP tables in `{core_target}`
 
 {table_list}
 
@@ -184,13 +184,13 @@ The skill will not auto-generate stubs for these tables. You decide per table.
 
 def _render_readme(
     project_name: str,
-    bundle_target: str,
-    silver_target: str,
+    volume_target: str,
+    core_target: str,
     existing_tables: list[str],
     detection_skipped_reason: str | None,
 ) -> str:
     existing_section = _render_existing_tables_section(
-        silver_target, existing_tables, detection_skipped_reason
+        core_target, existing_tables, detection_skipped_reason
     )
     return f"""# {project_name}
 
@@ -208,13 +208,13 @@ OMOP CDM v5.4 build project, scaffolded by `omop-pipeline-builder`.
 - `tests/` — Pydantic schema tests
 - `docs/omop-runbook.md` — quickstart guide
 
-## Bundle target
+## Volume target
 
-This bundle deploys to: `{bundle_target}`
+Bundle config Volume: `{volume_target}`
 
-## Silver schema
+## Core schema
 
-OMOP tables materialize in: `{silver_target}`
+OMOP core tables materialize in: `{core_target}`
 
 {existing_section}
 
@@ -268,8 +268,8 @@ Use a service principal path (`/Workspace/Service Principals/<sp-id>/...`) if yo
 
 def scaffold_project(
     project_path: str,
-    bundle_target: str,
-    silver_target: str | None = None,
+    volume_target: str,
+    core_target: str | None = None,
     project_name: str = "omop-build",
     profile: str | None = None,
 ) -> ScaffoldResult:
@@ -280,11 +280,12 @@ def scaffold_project(
             Customer-chosen. Typically a UC Volume mount path
             (/Volumes/<catalog>/<schema>/<volume>/), but local paths and
             Workspace paths also work.
-        bundle_target: Three-part UC name where the bundle deploys:
+        volume_target: Three-part UC name where the bundle deploys:
             catalog.schema.volume. The Volume MUST exist; scaffolder verifies
             before writing.
-        silver_target: Two-part UC name (catalog.schema) where OMOP tables
-            live or will materialize. Defaults to <bundle_catalog>.core_omop.
+        core_target: Two-part UC name (catalog.schema) where OMOP tables
+            live or will materialize. Defaults to <catalog>.core_omop, where
+            <catalog> is the catalog portion of volume_target.
         project_name: Bundle and project identifier.
         profile: Optional Databricks CLI profile for SDK auth.
 
@@ -292,7 +293,7 @@ def scaffold_project(
         ScaffoldResult describing what was written and what state was found.
 
     Raises:
-        VolumeNotFoundError: if bundle_target Volume doesn't exist or isn't
+        VolumeNotFoundError: if volume_target Volume doesn't exist or isn't
             accessible. Agent catches and asks customer to create.
         ValueError: if project_path already contains a databricks.yml.
     """
@@ -303,12 +304,12 @@ def scaffold_project(
             "Pick a different path, or delete the existing project to start fresh."
         )
 
-    silver_target = silver_target or _default_silver_target(bundle_target)
-    _validate_silver_target(silver_target)
+    core_target = core_target or _default_core_target(volume_target)
+    _validate_core_target(core_target)
 
-    _verify_volume_exists(bundle_target, profile=profile)
+    _verify_volume_exists(volume_target, profile=profile)
 
-    catalog = bundle_target.split(".")[0]
+    catalog = volume_target.split(".")[0]
 
     files_written = _copy_template_tree(TEMPLATES_DIR, target)
     templated = _template_catalog_in_load_vocabulary(target, catalog)
@@ -319,12 +320,12 @@ def scaffold_project(
             "(Source template may have evolved — re-check the templating helper.)"
         )
 
-    existing, skip_reason = _probe_existing_tables(silver_target, profile=profile)
+    existing, skip_reason = _probe_existing_tables(core_target, profile=profile)
 
     files_written += _write_templated_files(
         target=target,
-        bundle_target=bundle_target,
-        silver_target=silver_target,
+        volume_target=volume_target,
+        core_target=core_target,
         project_name=project_name,
         existing_tables=existing,
         detection_skipped_reason=skip_reason,
@@ -332,35 +333,35 @@ def scaffold_project(
 
     return ScaffoldResult(
         project_path=str(target.resolve()),
-        bundle_target=bundle_target,
-        silver_target=silver_target,
+        volume_target=volume_target,
+        core_target=core_target,
         existing_tables=existing,
         detection_skipped_reason=skip_reason,
         files_written=files_written,
     )
 
 
-def _verify_volume_exists(bundle_target: str, profile: str | None = None) -> None:
-    """Verify the UC Volume named by bundle_target exists.
+def _verify_volume_exists(volume_target: str, profile: str | None = None) -> None:
+    """Verify the UC Volume named by volume_target exists.
 
     Raises VolumeNotFoundError if it doesn't, or if the SDK call fails for any
     reason (auth, permissions, etc). The scaffolder doesn't distinguish between
     "doesn't exist" and "exists but you can't see it" — both require the
     customer to take action through UC governance.
     """
-    parts = bundle_target.split(".")
+    parts = volume_target.split(".")
     if len(parts) != 3:
         raise ValueError(
-            f"bundle_target must be three-part catalog.schema.volume, "
-            f"got: {bundle_target}"
+            f"volume_target must be three-part catalog.schema.volume, "
+            f"got: {volume_target}"
         )
-    full_volume_name = bundle_target
+    full_volume_name = volume_target
 
     try:
         w = WorkspaceClient(profile=profile)
     except Exception as e:
         raise VolumeNotFoundError(
-            bundle_target=bundle_target,
+            volume_target=volume_target,
             underlying_reason=f"Databricks SDK auth failed: {type(e).__name__}: {e}",
         ) from e
 
@@ -368,18 +369,18 @@ def _verify_volume_exists(bundle_target: str, profile: str | None = None) -> Non
         w.volumes.read(name=full_volume_name)
     except Exception as e:
         raise VolumeNotFoundError(
-            bundle_target=bundle_target,
+            volume_target=volume_target,
             underlying_reason=f"{type(e).__name__}: {e}",
         ) from e
 
 
 def _probe_existing_tables(
-    silver_target: str, profile: str | None = None
+    core_target: str, profile: str | None = None
 ) -> tuple[list[str], str | None]:
     """Best-effort probe. Returns ([], reason) on any failure."""
-    parts = silver_target.split(".")
+    parts = core_target.split(".")
     if len(parts) != 2:
-        return [], f"silver_target must be catalog.schema, got: {silver_target}"
+        return [], f"core_target must be catalog.schema, got: {core_target}"
     catalog, schema = parts
 
     try:
@@ -393,7 +394,7 @@ def _probe_existing_tables(
     except Exception as e:
         return (
             [],
-            f"Could not list tables in {silver_target}: {type(e).__name__}: {e}",
+            f"Could not list tables in {core_target}: {type(e).__name__}: {e}",
         )
 
 
@@ -424,24 +425,24 @@ def _copy_template_tree(src: Path, dst: Path) -> int:
 
 def _write_templated_files(
     target: Path,
-    bundle_target: str,
-    silver_target: str,
+    volume_target: str,
+    core_target: str,
     project_name: str,
     existing_tables: list[str],
     detection_skipped_reason: str | None,
 ) -> int:
     """Write databricks.yml + README.md to target/, returning 2."""
     databricks_yml = _render_databricks_yml(
-        bundle_target=bundle_target,
-        silver_target=silver_target,
+        volume_target=volume_target,
+        core_target=core_target,
         project_name=project_name,
     )
     (target / "databricks.yml").write_text(databricks_yml, encoding="utf-8")
 
     readme = _render_readme(
         project_name=project_name,
-        bundle_target=bundle_target,
-        silver_target=silver_target,
+        volume_target=volume_target,
+        core_target=core_target,
         existing_tables=existing_tables,
         detection_skipped_reason=detection_skipped_reason,
     )
@@ -454,7 +455,7 @@ def _template_catalog_in_load_vocabulary(target_dir: Path, catalog: str) -> int:
 
     The source template ships with `your_catalog` as the widget default and in
     path strings. The scaffolder replaces every literal occurrence with the
-    customer's actual catalog (derived from bundle_target) so the customer
+    customer's actual catalog (derived from volume_target) so the customer
     doesn't ship the placeholder default. Returns 1 if the file was modified,
     0 if the placeholder was absent (drift-safety: source template may have
     evolved).
@@ -480,7 +481,7 @@ def _cli() -> None:
         help="Filesystem path where the project tree is written.",
     )
     parser.add_argument(
-        "--bundle-target",
+        "--volume-target",
         required=True,
         help=(
             "Three-part UC name: catalog.schema.volume. "
@@ -488,11 +489,11 @@ def _cli() -> None:
         ),
     )
     parser.add_argument(
-        "--silver-target",
+        "--core-target",
         default=None,
         help=(
             "Two-part UC name: catalog.schema. "
-            "Defaults to <bundle-catalog>.core_omop"
+            "Defaults to <volume-target-catalog>.core_omop"
         ),
     )
     parser.add_argument("--project-name", default="omop-build")
@@ -506,8 +507,8 @@ def _cli() -> None:
     try:
         result = scaffold_project(
             project_path=args.project_path,
-            bundle_target=args.bundle_target,
-            silver_target=args.silver_target,
+            volume_target=args.volume_target,
+            core_target=args.core_target,
             project_name=args.project_name,
             profile=args.profile,
         )
@@ -527,8 +528,8 @@ def _cli() -> None:
         raise SystemExit(1)
 
     print(f"Scaffolded project at: {result.project_path}")
-    print(f"  bundle_target: {result.bundle_target}")
-    print(f"  silver_target: {result.silver_target}")
+    print(f"  volume_target: {result.volume_target}")
+    print(f"  core_target: {result.core_target}")
     print(f"  files written: {result.files_written}")
     if result.existing_tables:
         print(f"  existing tables found: {len(result.existing_tables)}")
