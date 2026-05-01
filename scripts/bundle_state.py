@@ -503,15 +503,22 @@ def _table_state_level(state: BundleState, table: str) -> int:
 
     Levels (per Phase 2 spec):
 
-    - **L0** — no config, no task, no table. (Or: weird state where a
-      table is materialized without any local config; the skill cannot
-      manage it, so we surface it as L0.)
-    - **L1** — config exists, task is commented or absent, table not
-      materialized. Mid-edit / ready-to-wire state.
-    - **L2** — config exists, task is wired, table not yet materialized.
-    - **L3** — config exists, task wired, table materialized. The "done"
-      state — predecessors at L3 are satisfied without needing inclusion
-      in a downstream batch.
+    - **L0** — no config locally. (Includes the anomaly where a table
+      appears in ``silver_tables`` with no local config: the skill
+      cannot manage it through this workflow, so the predecessor is
+      reported as L0 and surfaces in ``unsatisfied_predecessors``.)
+    - **L1** — config exists; task is commented, absent, or only
+      present in ``tasks_commented``; table not yet materialized — OR,
+      the silver-only anomaly: config exists, task is NOT wired, but
+      the table happens to appear in ``silver_tables``. We still return
+      L1 in this case because the skill-managed gap (an unwired task)
+      is the actionable signal, regardless of how the table got
+      materialized. The agent should treat L1 as "needs further work
+      before this is a batch dependency it can rely on."
+    - **L2** — config exists, task wired, table not yet materialized.
+    - **L3** — config exists, task wired, table materialized. The
+      "done" state — predecessors at L3 are satisfied without needing
+      inclusion in a downstream batch.
     """
     has_config = (
         f"{table}.yaml" in state.configs_present
@@ -535,16 +542,24 @@ def classify_batch(
 
     Given a list of target tables, returns a topologically-ordered build
     plan, identifies missing predecessors not in the batch, and collects
-    per-table conflicts (existing configs needing branching, or
-    not-scaffolded projects). The agent's batch response template branches
+    per-table conflicts (existing configs needing branching, OR projects
+    that aren't scaffolded). The agent's batch response template branches
     on ``suggested_action``:
 
     - ``'proceed'`` — all targets are at L0 with predecessors satisfied;
       generate them in ``build_order``.
     - ``'refuse_predecessor'`` — at least one predecessor is not in the
       batch and not at L3; surface the gap and ask the engineer to add it.
-    - ``'branch'`` — at least one requested table needs branching (existing
-      config, or project not scaffolded); resolve before proceeding.
+    - ``'branch'`` — at least one requested table needs the agent to talk
+      to the engineer before proceeding. This collapses two distinct
+      situations into one verdict: an existing config that needs
+      update/replace/different-table branching, OR a project that isn't
+      scaffolded yet. Consumers must introspect ``conflicts[i].suggested_action``
+      to differentiate ``'branch'`` (resolve config) from
+      ``'not_scaffolded'`` (run scaffolder first). When ``'branch'``
+      fires, ``unsatisfied_predecessors`` may also be populated; the
+      verdict simply reflects that branching dominates as the next
+      conversational step, not that predecessors are satisfied.
 
     Args:
         state: Current bundle state.
