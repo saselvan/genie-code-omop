@@ -42,11 +42,17 @@ TEMPLATES_DIR = (
 )
 
 # Skill version stamped into a `.omop-skill-version` marker file at scaffold
-# time. Informational only — bundle_state reads it as a forward-looking
-# breadcrumb when classifying requests, but no scaffolder behavior branches
-# on it. The marker is the cheapest reliable answer to "what skill version
-# wrote this project tree?" for support and audit.
-_CURRENT_SKILL_VERSION = "2.0.1"
+# time. The marker has two orthogonal uses:
+#   1. Version detection (informational): bundle_state reads it as a
+#      forward-looking breadcrumb when classifying requests; no scaffolder
+#      behavior branches on the *value* of the version string.
+#   2. Completion detection (behavioral): the scaffolder writes the marker
+#      LAST, after every other artifact. The marker's *presence* therefore
+#      means "the previous scaffold ran to completion." A project tree that
+#      has `databricks.yml` and `src/` but no marker is a crashed scaffold,
+#      and the scaffolder allows retry-with-overwrite. See
+#      `scaffold_project`'s refuse guard.
+_CURRENT_SKILL_VERSION = "2.0.2"
 
 
 class VolumeNotFoundError(Exception):
@@ -425,19 +431,35 @@ def scaffold_project(
     Raises:
         VolumeNotFoundError: if volume_target Volume doesn't exist or isn't
             accessible. Agent catches and asks customer to create.
-        ValueError: if project_path already contains a databricks.yml
-            (refuse to scaffold over any existing project — start over with
-            a fresh path); if volume_target / core_target / bronze_target
+        ValueError: if project_path contains a *completed* OMOP project (all
+            three of `databricks.yml`, `src/`, and the `.omop-skill-version`
+            marker present); if volume_target / core_target / bronze_target
             are malformed; or if the three targets don't share a single
             Unity Catalog.
+
+    Retry-safe over partial state. The scaffolder writes idempotently:
+    `_copy_template_tree` and `_template_catalog_in_load_vocabulary` are
+    overwrite-safe, and `_write_templated_files` rewrites both
+    `databricks.yml` and `README.md` on every run. Any state that's *not* a
+    completed project (crashed mid-scaffold, hand-authored `databricks.yml`,
+    `databricks bundle init` output, etc.) is treated as "scaffold over
+    this," and the original artifacts are overwritten cleanly. Customer
+    files NOT under `templates/project_scaffold/` (e.g., `configs/<table>.yaml`
+    drafts) survive untouched.
     """
     target = Path(project_path)
-    if (target / "databricks.yml").exists():
+    has_databricks_yml = (target / "databricks.yml").exists()
+    has_src = (target / "src").exists()
+    has_marker = (target / ".omop-skill-version").exists()
+    if has_databricks_yml and has_src and has_marker:
         raise ValueError(
-            f"{project_path} already contains a databricks.yml. "
-            "Refusing to scaffold over an existing project. To start over, "
-            "delete the project tree contents and re-run, or pick a fresh "
-            "project_path."
+            f"{project_path} contains a completed OMOP project "
+            "(databricks.yml, src/, and .omop-skill-version marker all "
+            "present). Refusing to scaffold over it. To start over, delete "
+            "the project tree contents and re-run, or pick a fresh "
+            "project_path. (To recover from a crashed scaffold, the marker "
+            "is the missing indicator — re-running the scaffolder will "
+            "complete the partial state safely.)"
         )
 
     # Format-validate all three targets before any disk write or SDK call so

@@ -5,7 +5,7 @@ license: MIT
 compatibility: Designed for Databricks Genie Code Agent mode launched from a notebook with a Python-capable cluster (serverless or classic). Genie Code launched from the catalog browser, a Genie Space, or the SQL editor is backed by a SQL warehouse and CANNOT run this skill's Step 6 Pydantic validator — see "Compute requirements" below. Requires databricks-sdk, pyyaml, pydantic. Run pipeline triggering uses Pipelines Editor native run when available, scripts/run_pipeline.py from notebooks.
 metadata:
   author: Samuel Selvan (Databricks SA)
-  version: "2.0.1"
+  version: "2.0.2"
   built_for_session: "2026-04-29 OMOP transform framework hands-on"
   v1_1_notes: "Vendor-neutralized; standalone YAML validator (no host-repo cd); workspace-scope deploy; canonical example flipped to fact-table shape."
   v1_2_notes: "STCM guidance reframed: source_to_concept_map UC table is the runtime source of truth; CSV seed at seed_data/source_to_concept_map_custom.csv is one of two write paths (alongside direct SQL/MERGE), not the only path. Added 'Adding source_to_concept_map mappings' section."
@@ -14,6 +14,7 @@ metadata:
   v1_6_notes: "Step 0 added for first-time project scaffolding via scripts/scaffold_omop_project.py (existing Step 0 'Discover source schema' content preserved as Step 1 subsection). Step 7 body tightened to inline scaffold-aware vs hand-authored DAG-wiring guidance with mandatory rules (full_refresh, depends_on, validate-before-deploy)."
   v2_0_notes: "State-aware skill: bundle_state.py reads project state, classify_request branches Update / Replace / Different-table sub-paths, classify_batch reorders multi-table requests by OMOP DAG. Steps renumbered 1-8 with Step 4 (Update workflow, retry-with-fix-forward) and Step 5 (Generate workflow) as peer sub-paths. config_writer.py ships atomic writes with optional mtime-based optimistic concurrency; structural_changelog.py produces field-level Pydantic-schema-aware diffs. Validation-prominence template fires on materialization_diff after a successful pipeline run (Decision 14: prominent offer, respected decline, named trade-off, no enforcement). references/recommended_ci_config.md ships GitHub Actions and Azure DevOps Pipelines snippets for wiring Pydantic + databricks bundle validate into CI."
   v2_0_1_notes: "Scaffolder now takes an explicit bronze_target (catalog.schema) — eliminates the v2.0 hardcoded `bronze_schema: bronze_clinical` default that didn't match real EHR landing zones (Caboodle, Clarity, Lakeflow Connect). Default is a `<CHANGEME>`-flagged placeholder so unreplaced values stay loud. Cross-catalog consistency assertion across volume_target + core_target + bronze_target prevents typo'd-catalog scaffolds. v1.6 upgrade machinery removed (no customer ran v1.6 or v2.0 in production); the marker file survives as a forward-looking breadcrumb but no scaffolder behavior branches on it. Re-scaffold over an existing project (databricks.yml present) now refuses uniformly — no marker logic. SKILL.md adds a 'Source of truth' note clarifying databricks.yml ↔ discovery.yaml precedence."
+  v2_0_2_notes: "Scaffolder refuse-guard upgraded from single-indicator (databricks.yml present) to three-indicator (databricks.yml + src/ + .omop-skill-version marker all present). The marker takes on a second, behavioral role: written LAST, its presence means 'previous scaffold ran to completion.' Crashed scaffolds (databricks.yml + src/ but no marker — common failure mode: disk I/O failure between the YAML write and the marker write) are now retry-safe, no manual `rm -rf` required. Foreign databricks.yml files (e.g., from `databricks bundle init` before the customer decided to use the OMOP scaffolder) also fall through to retry. Customer files outside the scaffolded artifact set (e.g., `configs/<table>.yaml` drafts) survive retries untouched. Marker's two roles — informational for version detection, behavioral for completion detection — are orthogonal: this didn't reintroduce v1.6's upgrade-path machinery."
 ---
 
 # OMOP Pipeline Builder
@@ -81,7 +82,15 @@ Skip this step if your team already has an OMOP build repo. This step is for
 the first time someone on your team is starting an OMOP CDM v5.4 build with
 this skill.
 
-> **What scaffolding does and why you only do it once.** The scaffolder writes a working DAB-shaped project tree (bundle config, jobs DAG with all 14 OMOP tables as commented placeholders, src/ boilerplate, empty configs/ folder, seed_data template, README) into a customer-chosen path. It is **not idempotent**: re-running over an existing project (`databricks.yml` already present) refuses, on purpose. The skill writes configs into the project tree on every subsequent invocation; scaffolding only sets up the tree.
+> **What scaffolding does and why you only do it once.** The scaffolder writes a working DAB-shaped project tree (bundle config, jobs DAG with all 14 OMOP tables as commented placeholders, src/ boilerplate, empty configs/ folder, seed_data template, README) into a customer-chosen path. The skill writes configs into the project tree on every subsequent invocation; scaffolding only sets up the tree.
+>
+> **Refuse vs retry.** The scaffolder refuses to overwrite a *completed* OMOP project, where all three indicators are present at `project_path`: `databricks.yml`, `src/`, and the `.omop-skill-version` marker file (written last by every successful scaffold). Anything short of a completed scaffold is treated as retry-safe and overwritten cleanly:
+>
+> - **Crashed scaffold** (`databricks.yml` + `src/` present, marker missing) — disk I/O failure between the YAML write and the marker write. Re-running the scaffolder completes the partial state. No manual `rm -rf` required.
+> - **Foreign `databricks.yml`** (no `src/`, no marker) — e.g., from `databricks bundle init` or hand-authoring before the customer chose the OMOP scaffolder. Re-running replaces the foreign bundle config with the OMOP one.
+> - **Empty path** — fresh scaffold.
+>
+> Customer files *outside* the scaffolded artifact set (drafts in `configs/`, ad-hoc notes, etc.) survive retries untouched. Customer edits to scaffolded files (e.g., manual changes to `src/01_load_vocabulary.py`) are overwritten on retry — that's why retry is reserved for incomplete scaffolds, not "I want to refresh my completed project from the template."
 
 The scaffolder also probes the silver
 schema for existing OMOP tables and surfaces them so the team can decide per
