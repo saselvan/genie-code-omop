@@ -272,27 +272,142 @@ This file is an **artifact the agent writes at the end of Step 6 with user conse
 
 ### Step 4 — Update workflow
 
-The engineer chose "Update" from Step 2's three sub-paths. The agent
-regenerates the whole config with the requested change, computes a
-structural field-level changelog against the Pydantic schema to ground
-its plain-language summary, and writes the new file with optimistic
-mtime concurrency. The reviewer reads the new file directly — the agent
-does not produce textual `+old/-new` diffs.
+The engineer chose "Update" from Step 2's three sub-paths. They want to
+change something specific in an existing config (vocabulary strategy,
+CASE branches, additional column mapping) without discarding the whole
+file. The agent regenerates the whole config with the change
+incorporated, validates against the Pydantic schema with a
+retry-with-fix-forward loop, computes a structural field-level
+changelog against the existing file, then writes the new file
+atomically with optimistic mtime concurrency. The reviewer reads the
+new file directly — the agent does not produce textual `+old/-new`
+diffs (Decision 9: structural, not textual).
 
-The full Update workflow content — including the retry-with-fix-forward
-loop on Pydantic validation failures and the response template that
-surfaces the structural changelog — ships in a later phase of this
-release. For the current build, the high-level contract is:
+**Read existing state first.** Before regenerating, the agent reads
+the existing `configs/<table>.yaml` text AND captures its mtime
+via `os.stat(<config_path>).st_mtime`. The mtime is the optimistic
+concurrency token passed to `write_config` later. The text is one
+of the two inputs to the structural diff.
 
-- The original `configs/<table>.yaml` is unchanged on disk while the
-  agent regenerates and validates.
-- After successful Pydantic validation the agent writes the new file
-  atomically; on failure the original is preserved.
-- The agent describes what changed in plain language; the reviewer
-  reads the file directly.
+**Generate-and-validate loop (retry-with-fix-forward, N=3).** The
+agent regenerates the YAML in working memory, runs
+`validate_yaml_schema.validate_text(new_yaml)`, and:
 
-If "Replace" was chosen instead, see Step 5 (Generate workflow). The
-"Different table" sub-path re-enters Step 2 with the new target.
+- On success → break out of the loop with the validated YAML.
+- On `ValidationError` → format the Pydantic errors (one per line
+  with field path and message) and feed them back into the
+  regeneration prompt as "previous attempt failed validation here:
+  `<formatted errors>`; produce a corrected YAML that fixes only
+  these paths." Repeat up to **3 times total**.
+- After 3 failures → bail to the retries-exhausted response template
+  below. The original `configs/<table>.yaml` is unchanged on disk
+  throughout the loop.
+
+**Compute the structural changelog.** Once a candidate YAML
+validates, the agent calls
+`structural_changelog.compute_structural_changelog(old_yaml, new_yaml)`
+to get an ordered list of `FieldChange` records. Each record has
+`field_path`, `change_type` (`added` / `removed` / `modified`),
+`old_value`, and `new_value`. Field paths use dotted snake_case for
+dict keys and bracket notation for list indices, e.g.
+`vocabulary_lookups[0].vocabulary_id`. The agent uses the changelog
+to ground its plain-language summary — name the actual fields that
+changed; do not invent.
+
+**Write atomically with mtime guard.** The agent calls
+`config_writer.write_config(project_path, target_table, new_yaml,
+overwrite=True, expected_mtime=<captured_mtime>)`. Three outcomes:
+
+- Success → `WriteResult` returned. If `result.git_warning` is set
+  (project is not under git or git probe failed), surface it in the
+  response template alongside the success summary; do not block.
+- `MtimeMismatchError` → someone else modified or deleted the file
+  between the agent's read and write. The agent surfaces the
+  concurrency template below and re-enters Step 2 (which re-reads
+  bundle state to get the new ground truth).
+- `FileExistsError` → cannot happen here because Update always passes
+  `overwrite=True`. If it does, treat as a programming bug and
+  surface the raw error.
+
+**Response template (success):**
+
+> Updated `configs/person.yaml`. Field-level changes from the
+> previous version:
+>
+> - `vocabulary_lookups[0].resolution`: `source_to_concept_map` →
+>   `concept_table_mapped`
+> - `vocabulary_lookups[0].domain_id`: added (`Gender`)
+> - `column_mappings[3]`: added (`race_concept_id` ← lookup against
+>   race code 'X')
+>
+> Plain-language summary: switched to standard-concept-only
+> resolution for gender and added a race CASE branch for the
+> previously-unmapped code 'X'.
+>
+> Open `configs/person.yaml` to review the full content. The OMOP
+> fidelity checks for this update are:
+>
+> - `vocabulary_lookups[0].domain_id='Gender'` matches the canonical
+>   pattern for concept_table_mapped on Person
+> - `column_mappings[3].expr` produces 0 for unmapped race codes
+>   (matches the fallback rule)
+>
+> Commit the change through your normal git workflow when satisfied.
+
+**Response template (retries exhausted):**
+
+> I couldn't compose a valid YAML for the change you requested after
+> 3 attempts. The original `configs/person.yaml` is unchanged on
+> disk. The validation errors I'm hitting:
+>
+> - `vocabulary_lookups.0.source_vocabulary_id`: required when
+>   resolution=source_to_concept_map
+> - `column_mappings.3.expr`: input should be a valid string
+>
+> The likely cause is `<plain-language diagnosis grounded in the
+> errors above>`. Would you like to:
+>
+> 1. Reframe the change request so I can try again
+> 2. Make the edit manually (here's a sketch of what I'd write:
+>    `<sketch>`)
+> 3. Walk through the validation errors together so we can decide
+>    what to fix
+
+**Response template (concurrency conflict):**
+
+> `configs/person.yaml` was modified or removed by someone else
+> after I read it (mtime mismatch). The original on-disk file is
+> unchanged from my write attempt. Re-reading state and re-entering
+> Step 2 — please re-confirm the change you want to make.
+
+**Response template (non-Git'd project warning, append to success):**
+
+> ⓘ This project isn't under git version control. The skill does
+> not snapshot configs — without git or cloud-side storage
+> versioning, this overwrite is not recoverable. Recommended:
+> connect this project to git before further updates. Alternative:
+> ask your platform team to enable versioning on the storage
+> account backing this Volume.
+
+The agent does NOT:
+
+- Render textual `+old/-new` diffs (structural diff via
+  `structural_changelog.compute_structural_changelog` is the only
+  diff surface)
+- Auto-commit (engineer commits through their normal git workflow,
+  Decision 11)
+- Auto-deploy (CI/CD pipeline owns deploy)
+- Make targeted line-level edits to the existing file (regenerates
+  the WHOLE config, Decision 9)
+- Snapshot the previous version anywhere on disk (no `.bak` files;
+  the customer's git history or storage versioning is the snapshot
+  surface, Decision 10)
+
+If "Replace" was chosen instead, see Step 5 (Generate workflow);
+Replace passes `overwrite=True` with `expected_mtime=None` (no
+concurrency guard — Replace's intent is to discard the existing
+state, so a concurrent edit racing with us is moot). The "Different
+table" sub-path re-enters Step 2 with the new target.
 
 ### Step 5 — Generate config via `scripts/generate_config.py`
 
