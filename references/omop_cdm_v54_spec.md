@@ -21,11 +21,11 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | care_site_id | BIGINT | Y | N | | |
 | person_source_value | STRING | Y | N | | |
 | gender_source_value | STRING | Y | N | | |
-| gender_source_concept_id | INT | Y | N | concept.concept_id | Gender |
+| gender_source_concept_id | INT | Y | N | concept.concept_id | |
 | race_source_value | STRING | Y | N | | |
-| race_source_concept_id | INT | Y | N | concept.concept_id | Race |
+| race_source_concept_id | INT | Y | N | concept.concept_id | |
 | ethnicity_source_value | STRING | Y | N | | |
-| ethnicity_source_concept_id | INT | Y | N | concept.concept_id | Ethnicity |
+| ethnicity_source_concept_id | INT | Y | N | concept.concept_id | |
 
 ## observation_period
 
@@ -52,7 +52,7 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | provider_id | BIGINT | Y | N | | |
 | care_site_id | BIGINT | Y | N | | |
 | visit_source_value | STRING | Y | N | | |
-| visit_source_concept_id | INT | Y | N | concept.concept_id | Visit |
+| visit_source_concept_id | INT | Y | N | concept.concept_id | |
 | admitted_from_concept_id | INT | Y | N | concept.concept_id | Visit |
 | admitted_from_source_value | STRING | Y | N | | |
 | discharged_to_concept_id | INT | Y | N | concept.concept_id | Visit |
@@ -77,7 +77,7 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | visit_occurrence_id | BIGINT | Y | N | | |
 | visit_detail_id | BIGINT | Y | N | | |
 | condition_source_value | STRING | Y | N | | |
-| condition_source_concept_id | INT | Y | N | concept.concept_id | Condition |
+| condition_source_concept_id | INT | Y | N | concept.concept_id | |
 | condition_status_source_value | STRING | Y | N | | |
 
 ## procedure_occurrence
@@ -98,7 +98,7 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | visit_occurrence_id | BIGINT | Y | N | | |
 | visit_detail_id | BIGINT | Y | N | | |
 | procedure_source_value | STRING | Y | N | | |
-| procedure_source_concept_id | INT | Y | N | concept.concept_id | Procedure |
+| procedure_source_concept_id | INT | Y | N | concept.concept_id | |
 
 ## drug_exposure
 
@@ -124,7 +124,7 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | visit_occurrence_id | BIGINT | Y | N | | |
 | visit_detail_id | BIGINT | Y | N | | |
 | drug_source_value | STRING | Y | N | | |
-| drug_source_concept_id | INT | Y | N | concept.concept_id | Drug |
+| drug_source_concept_id | INT | Y | N | concept.concept_id | |
 | route_source_value | STRING | Y | N | | |
 | dose_unit_source_value | STRING | Y | N | | |
 
@@ -149,9 +149,9 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | visit_occurrence_id | BIGINT | Y | N | | |
 | visit_detail_id | BIGINT | Y | N | | |
 | measurement_source_value | STRING | Y | N | | |
-| measurement_source_concept_id | INT | Y | N | concept.concept_id | Measurement |
+| measurement_source_concept_id | INT | Y | N | concept.concept_id | |
 | unit_source_value | STRING | Y | N | | |
-| unit_source_concept_id | INT | Y | N | concept.concept_id | Unit |
+| unit_source_concept_id | INT | Y | N | concept.concept_id | |
 | value_source_value | STRING | Y | N | | |
 | measurement_event_id | BIGINT | Y | N | | |
 | meas_event_field_concept_id | INT | Y | N | concept.concept_id | |
@@ -175,7 +175,7 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | visit_occurrence_id | BIGINT | Y | N | | |
 | visit_detail_id | BIGINT | Y | N | | |
 | observation_source_value | STRING | Y | N | | |
-| observation_source_concept_id | INT | Y | N | concept.concept_id | Observation |
+| observation_source_concept_id | INT | Y | N | concept.concept_id | |
 | unit_source_value | STRING | Y | N | | |
 | qualifier_source_value | STRING | Y | N | | |
 | observation_event_id | BIGINT | Y | N | | |
@@ -235,7 +235,7 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | specialty_source_value | STRING | Y | N | | |
 | specialty_source_concept_id | INT | Y | N | concept.concept_id | |
 | gender_source_value | STRING | Y | N | | |
-| gender_source_concept_id | INT | Y | N | concept.concept_id | Gender |
+| gender_source_concept_id | INT | Y | N | concept.concept_id | |
 
 ## condition_era
 
