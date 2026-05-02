@@ -16,9 +16,9 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | birth_datetime | TIMESTAMP | Y | N | | |
 | race_concept_id | INT | N | N | concept.concept_id | Race |
 | ethnicity_concept_id | INT | N | N | concept.concept_id | Ethnicity |
-| location_id | BIGINT | Y | N | | |
-| provider_id | BIGINT | Y | N | | |
-| care_site_id | BIGINT | Y | N | | |
+| location_id | BIGINT | Y | N | location.location_id | |
+| provider_id | BIGINT | Y | N | provider.provider_id | |
+| care_site_id | BIGINT | Y | N | care_site.care_site_id | |
 | person_source_value | STRING | Y | N | | |
 | gender_source_value | STRING | Y | N | | |
 | gender_source_concept_id | INT | Y | N | concept.concept_id | |
@@ -49,15 +49,15 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | visit_end_date | DATE | N | N | | |
 | visit_end_datetime | TIMESTAMP | Y | N | | |
 | visit_type_concept_id | INT | N | N | concept.concept_id | Type Concept |
-| provider_id | BIGINT | Y | N | | |
-| care_site_id | BIGINT | Y | N | | |
+| provider_id | BIGINT | Y | N | provider.provider_id | |
+| care_site_id | BIGINT | Y | N | care_site.care_site_id | |
 | visit_source_value | STRING | Y | N | | |
 | visit_source_concept_id | INT | Y | N | concept.concept_id | |
 | admitted_from_concept_id | INT | Y | N | concept.concept_id | Visit |
 | admitted_from_source_value | STRING | Y | N | | |
 | discharged_to_concept_id | INT | Y | N | concept.concept_id | Visit |
 | discharged_to_source_value | STRING | Y | N | | |
-| preceding_visit_occurrence_id | BIGINT | Y | N | | |
+| preceding_visit_occurrence_id | BIGINT | Y | N | visit_occurrence.visit_occurrence_id | |
 
 ## condition_occurrence
 
@@ -73,9 +73,9 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | condition_type_concept_id | INT | N | N | concept.concept_id | Type Concept |
 | condition_status_concept_id | INT | Y | N | concept.concept_id | Condition Status |
 | stop_reason | STRING | Y | N | | |
-| provider_id | BIGINT | Y | N | | |
-| visit_occurrence_id | BIGINT | Y | N | | |
-| visit_detail_id | BIGINT | Y | N | | |
+| provider_id | BIGINT | Y | N | provider.provider_id | |
+| visit_occurrence_id | BIGINT | Y | N | visit_occurrence.visit_occurrence_id | |
+| visit_detail_id | BIGINT | Y | N | visit_detail.visit_detail_id | |
 | condition_source_value | STRING | Y | N | | |
 | condition_source_concept_id | INT | Y | N | concept.concept_id | |
 | condition_status_source_value | STRING | Y | N | | |
@@ -94,9 +94,9 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | procedure_type_concept_id | INT | N | N | concept.concept_id | Type Concept |
 | modifier_concept_id | INT | Y | N | concept.concept_id | |
 | quantity | INT | Y | N | | |
-| provider_id | BIGINT | Y | N | | |
-| visit_occurrence_id | BIGINT | Y | N | | |
-| visit_detail_id | BIGINT | Y | N | | |
+| provider_id | BIGINT | Y | N | provider.provider_id | |
+| visit_occurrence_id | BIGINT | Y | N | visit_occurrence.visit_occurrence_id | |
+| visit_detail_id | BIGINT | Y | N | visit_detail.visit_detail_id | |
 | procedure_source_value | STRING | Y | N | | |
 | procedure_source_concept_id | INT | Y | N | concept.concept_id | |
 
@@ -120,9 +120,9 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | sig | STRING | Y | N | | |
 | route_concept_id | INT | Y | N | concept.concept_id | Route |
 | lot_number | STRING | Y | N | | |
-| provider_id | BIGINT | Y | N | | |
-| visit_occurrence_id | BIGINT | Y | N | | |
-| visit_detail_id | BIGINT | Y | N | | |
+| provider_id | BIGINT | Y | N | provider.provider_id | |
+| visit_occurrence_id | BIGINT | Y | N | visit_occurrence.visit_occurrence_id | |
+| visit_detail_id | BIGINT | Y | N | visit_detail.visit_detail_id | |
 | drug_source_value | STRING | Y | N | | |
 | drug_source_concept_id | INT | Y | N | concept.concept_id | |
 | route_source_value | STRING | Y | N | | |
@@ -145,9 +145,9 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | unit_concept_id | INT | Y | N | concept.concept_id | Unit |
 | range_low | FLOAT | Y | N | | |
 | range_high | FLOAT | Y | N | | |
-| provider_id | BIGINT | Y | N | | |
-| visit_occurrence_id | BIGINT | Y | N | | |
-| visit_detail_id | BIGINT | Y | N | | |
+| provider_id | BIGINT | Y | N | provider.provider_id | |
+| visit_occurrence_id | BIGINT | Y | N | visit_occurrence.visit_occurrence_id | |
+| visit_detail_id | BIGINT | Y | N | visit_detail.visit_detail_id | |
 | measurement_source_value | STRING | Y | N | | |
 | measurement_source_concept_id | INT | Y | N | concept.concept_id | |
 | unit_source_value | STRING | Y | N | | |
@@ -171,9 +171,9 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | value_as_concept_id | INT | Y | N | concept.concept_id | |
 | qualifier_concept_id | INT | Y | N | concept.concept_id | |
 | unit_concept_id | INT | Y | N | concept.concept_id | Unit |
-| provider_id | BIGINT | Y | N | | |
-| visit_occurrence_id | BIGINT | Y | N | | |
-| visit_detail_id | BIGINT | Y | N | | |
+| provider_id | BIGINT | Y | N | provider.provider_id | |
+| visit_occurrence_id | BIGINT | Y | N | visit_occurrence.visit_occurrence_id | |
+| visit_detail_id | BIGINT | Y | N | visit_detail.visit_detail_id | |
 | observation_source_value | STRING | Y | N | | |
 | observation_source_concept_id | INT | Y | N | concept.concept_id | |
 | unit_source_value | STRING | Y | N | | |
@@ -215,7 +215,7 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | care_site_id | BIGINT | N | Y | | |
 | care_site_name | STRING | Y | N | | |
 | place_of_service_concept_id | INT | Y | N | concept.concept_id | Visit |
-| location_id | BIGINT | Y | N | | |
+| location_id | BIGINT | Y | N | location.location_id | |
 | care_site_source_value | STRING | Y | N | | |
 | place_of_service_source_value | STRING | Y | N | | |
 
@@ -228,7 +228,7 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | npi | STRING | Y | N | | |
 | dea | STRING | Y | N | | |
 | specialty_concept_id | INT | Y | N | concept.concept_id | Provider |
-| care_site_id | BIGINT | Y | N | | |
+| care_site_id | BIGINT | Y | N | care_site.care_site_id | |
 | year_of_birth | INT | Y | N | | |
 | gender_concept_id | INT | Y | N | concept.concept_id | Gender |
 | provider_source_value | STRING | Y | N | | |
