@@ -6,21 +6,33 @@ Commit 2) ``templates/project_scaffold/src/99_validate_omop_output.py``
 against the same OMOP CDM v5.4 spec markdown, so a customer's result on
 the notebook matches the CLI's result on the same table.
 
-The layer functions print findings to stdout and return an integer
-failure count (0 = pass, 1 = fail). They take a ``sql_fn: SqlFn``
-callable and never construct or use a ``WorkspaceClient`` directly —
-the CLI orchestrator builds the bound ``sql_fn`` (with warehouse_id /
-catalog / schema pre-applied) and the notebook orchestrator does the
-same with its own SDK-aware wrapper. SDK exception wrapping (clean
-``SystemExit`` for invalid warehouse IDs) is a CLI concern and lives
-in ``validate_omop.py``.
+Layer functions print findings to stdout (for the CLI's text-log
+surface) and return a ``LayerResult`` carrying:
+  * ``failure_count`` — 0 = pass, 1 = the layer reported failures
+  * ``findings`` — structured ``Finding`` records, one per emit point
+    (PASS / FAIL / WARN / SKIP), parallel to the printed lines
+  * ``missing_cols`` — Layer 1 only: lowercased column names absent
+    from the actual table; consumed by Layers 3, 4, 5 to skip
+    UNRESOLVED_COLUMN-prone per-column SQL
+
+The structured ``findings`` were added in v2.0.4c Commit 1.5 so the
+notebook (Commit 2) can populate a Spark DataFrame without parsing
+the CLI's stdout. The CLI ignores ``findings`` and consumes only
+``failure_count``; print output remains byte-identical to v2.0.4b.
+
+Layer functions take a ``sql_fn: SqlFn`` callable and never construct
+or use a ``WorkspaceClient`` directly — the CLI orchestrator builds
+the bound ``sql_fn`` (with warehouse_id / catalog / schema pre-applied)
+and the notebook orchestrator does the same with its own SDK-aware
+wrapper. SDK exception wrapping (clean ``SystemExit`` for invalid
+warehouse IDs) is a CLI concern and lives in ``validate_omop.py``.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -32,6 +44,45 @@ class ColSpec:
     pk: bool
     fk: str | None
     domain: str | None
+
+
+@dataclass(frozen=True)
+class Finding:
+    """One structured validation result emitted by a layer function.
+
+    Parallel to one printed line: every ``print(...)`` in a layer's
+    PASS/FAIL/WARN/SKIP path has a matching ``Finding`` appended in
+    the same execution step, so the structured surface and the text
+    surface cannot drift mid-run.
+
+    Fields:
+      * ``layer`` — 1..5
+      * ``status`` — ``"PASS"`` | ``"FAIL"`` | ``"WARN"`` | ``"SKIP"``
+      * ``check`` — stable identifier (e.g. ``"schema"``,
+        ``"concept_fk:gender_concept_id"``, ``"not_null:person_id"``)
+      * ``message`` — human-readable detail; matches the printed
+        line minus the ``"PASS:"`` / ``"FAIL:"`` / ... prefix
+    """
+
+    layer: int
+    status: str
+    check: str
+    message: str
+
+
+@dataclass
+class LayerResult:
+    """Return type for ``run_layer_1`` through ``run_layer_5``.
+
+    ``failure_count`` is the only field the CLI consumes; ``findings``
+    is the structured surface for the notebook (and any future
+    non-CLI consumer); ``missing_cols`` is Layer 1's hand-off to
+    Layers 3, 4, 5 (empty for layers 2-5).
+    """
+
+    failure_count: int
+    findings: list[Finding] = field(default_factory=list)
+    missing_cols: set[str] = field(default_factory=set)
 
 
 def _norm_type(t: str) -> str:
@@ -125,13 +176,12 @@ def run_layer_1(
     sch: str,
     tbl: str,
     sql_fn: SqlFn,
-) -> tuple[int, set[str]]:
+) -> LayerResult:
     """Layer 1: schema (columns + loose types).
 
-    Returns ``(layer_failures, missing_cols_lowercased)``. The
-    ``missing_cols`` set is consumed by Layers 3, 4, 5 to skip per-column
-    SQL on columns that don't exist in the actual table — see
-    ``_should_skip_check`` for the rationale.
+    Returns a ``LayerResult`` whose ``missing_cols`` is consumed by
+    Layers 3, 4, 5 to skip per-column SQL on columns that don't exist
+    in the actual table — see ``_should_skip_check`` for the rationale.
     """
     print("== Layer 1: schema (columns + loose types) ==")
     info_sql = f"""
@@ -144,7 +194,7 @@ WHERE table_catalog = '{cat}' AND table_schema = '{sch}' AND table_name = '{tbl}
     spec_names = {c.name.lower() for c in cols}
     missing = sorted(spec_names - set(actual.keys()))
     extra = sorted(set(actual.keys()) - spec_names)
-    type_mismatch: list[str] = []
+    type_mismatch: list[tuple[str, str]] = []
     for c in cols:
         a = actual.get(c.name.lower())
         if not a:
@@ -168,29 +218,64 @@ WHERE table_catalog = '{cat}' AND table_schema = '{sch}' AND table_name = '{tbl}
             "FLOAT" in blob or "DOUBLE" in blob or "REAL" in blob
         ):
             continue
-        type_mismatch.append(f"{c.name}: expected ~{c.sql_type}, got {fdt or dt}")
+        type_mismatch.append((c.name, f"{c.name}: expected ~{c.sql_type}, got {fdt or dt}"))
 
     failures = 0
+    findings: list[Finding] = []
     if missing or extra or type_mismatch:
         failures = 1
         if missing:
             print(f"FAIL: missing columns: {missing}")
+            for col_name in missing:
+                findings.append(
+                    Finding(
+                        layer=1,
+                        status="FAIL",
+                        check=f"schema:missing:{col_name}",
+                        message=f"missing column: {col_name}",
+                    )
+                )
         if extra:
             print(f"WARN: extra columns not in spec: {extra}")
+            for col_name in extra:
+                findings.append(
+                    Finding(
+                        layer=1,
+                        status="WARN",
+                        check=f"schema:extra:{col_name}",
+                        message=f"extra column not in spec: {col_name}",
+                    )
+                )
         if type_mismatch:
             print("FAIL: type mismatches:")
-            for m in type_mismatch:
+            for col_name, m in type_mismatch:
                 print("  -", m)
+                findings.append(
+                    Finding(
+                        layer=1,
+                        status="FAIL",
+                        check=f"schema:type:{col_name}",
+                        message=m,
+                    )
+                )
     else:
         print("PASS: column names and coarse types align with spec.")
-    return failures, set(missing)
+        findings.append(
+            Finding(
+                layer=1,
+                status="PASS",
+                check="schema",
+                message="column names and coarse types align with spec",
+            )
+        )
+    return LayerResult(failure_count=failures, findings=findings, missing_cols=set(missing))
 
 
 def run_layer_2(
     cols: list[ColSpec],
     fq: str,
     sql_fn: SqlFn,
-) -> int:
+) -> LayerResult:
     """Layer 2: PK uniqueness.
 
     NOTE: Layer 2 has the same spec/actual coupling pattern as Layers 3, 4, 5
@@ -201,10 +286,19 @@ def run_layer_2(
     Revisit during a focused review against v2.0.4c-merged main.
     """
     print("== Layer 2: primary key uniqueness ==")
+    findings: list[Finding] = []
     pks = [c.name for c in cols if c.pk]
     if not pks:
         print("WARN: no PK marked in spec; skipping uniqueness check.")
-        return 0
+        findings.append(
+            Finding(
+                layer=2,
+                status="WARN",
+                check="pk",
+                message="no PK marked in spec; skipping uniqueness check",
+            )
+        )
+        return LayerResult(failure_count=0, findings=findings)
     pk_list = ", ".join(pks)
     dup_sql = f"""
 SELECT {pk_list}, COUNT(*) AS c FROM {fq} GROUP BY {pk_list} HAVING COUNT(*) > 1 LIMIT 20
@@ -212,9 +306,25 @@ SELECT {pk_list}, COUNT(*) AS c FROM {fq} GROUP BY {pk_list} HAVING COUNT(*) > 1
     dups = sql_fn(statement=dup_sql)
     if dups:
         print(f"FAIL: duplicate PK groups (showing up to 20): {dups}")
-        return 1
+        findings.append(
+            Finding(
+                layer=2,
+                status="FAIL",
+                check=f"pk_uniqueness:{pk_list}",
+                message=f"duplicate PK groups (showing up to 20): {dups}",
+            )
+        )
+        return LayerResult(failure_count=1, findings=findings)
     print("PASS: no duplicate primary keys.")
-    return 0
+    findings.append(
+        Finding(
+            layer=2,
+            status="PASS",
+            check=f"pk_uniqueness:{pk_list}",
+            message="no duplicate primary keys",
+        )
+    )
+    return LayerResult(failure_count=0, findings=findings)
 
 
 def run_layer_3(
@@ -223,7 +333,7 @@ def run_layer_3(
     concept: str,
     missing_cols: set[str],
     sql_fn: SqlFn,
-) -> int:
+) -> LayerResult:
     """Layer 3: referential integrity to concept.
 
     Skips ``*_concept_id`` columns reported missing by Layer 1 — see
@@ -231,6 +341,7 @@ def run_layer_3(
     increment failures (Layer 1 already counted them).
     """
     print("== Layer 3: referential integrity to concept ==")
+    findings: list[Finding] = []
     concept_cols = [c for c in cols if c.name.endswith("_concept_id")]
     skipped: list[str] = []
     bad_rows: list[tuple[str, int]] = []
@@ -249,14 +360,38 @@ WHERE s.`{c.name}` IS NOT NULL AND s.`{c.name}` <> 0 AND c.concept_id IS NULL
             bad_rows.append((c.name, n))
     for s in skipped:
         print(f"SKIP: {s}: column not in actual table (Layer 1)")
+        findings.append(
+            Finding(
+                layer=3,
+                status="SKIP",
+                check=f"concept_fk:{s}",
+                message="column not in actual table (Layer 1)",
+            )
+        )
     if bad_rows:
         print("FAIL: concept_id values not found in reference.concept (excluding 0):")
         for col, n in bad_rows:
             print(f"  - {col}: {n} rows")
-        return 1
+            findings.append(
+                Finding(
+                    layer=3,
+                    status="FAIL",
+                    check=f"concept_fk:{col}",
+                    message=f"{col}: {n} rows with concept_id not in reference.concept",
+                )
+            )
+        return LayerResult(failure_count=1, findings=findings)
     suffix = " (some skipped per Layer 1)" if skipped else ""
     print(f"PASS: all non-null non-zero concept_ids resolve to reference.concept{suffix}.")
-    return 0
+    findings.append(
+        Finding(
+            layer=3,
+            status="PASS",
+            check="concept_fk",
+            message=f"all non-null non-zero concept_ids resolve to reference.concept{suffix}",
+        )
+    )
+    return LayerResult(failure_count=0, findings=findings)
 
 
 def run_layer_4(
@@ -265,14 +400,15 @@ def run_layer_4(
     concept: str,
     missing_cols: set[str],
     sql_fn: SqlFn,
-) -> int:
+) -> LayerResult:
     """Layer 4: domain conformance (where Domain is documented).
 
     Skips columns reported missing by Layer 1 — see ``_should_skip_check``.
     """
     print("== Layer 4: domain conformance (where Domain is documented) ==")
+    findings: list[Finding] = []
     skipped: list[str] = []
-    dom_fails: list[str] = []
+    dom_fails: list[tuple[str, str]] = []
     for c in cols:
         if not c.domain or not c.name.endswith("_concept_id"):
             continue
@@ -290,17 +426,41 @@ WHERE s.`{col}` IS NOT NULL AND s.`{col}` <> 0
         cnt = sql_fn(statement=q)
         n = int(cnt[0][0]) if cnt and cnt[0] else 0
         if n:
-            dom_fails.append(f"{col}: {n} rows with domain_id <> {c.domain}")
+            dom_fails.append((col, f"{col}: {n} rows with domain_id <> {c.domain}"))
     for s in skipped:
         print(f"SKIP: {s}: column not in actual table (Layer 1)")
+        findings.append(
+            Finding(
+                layer=4,
+                status="SKIP",
+                check=f"domain:{s}",
+                message="column not in actual table (Layer 1)",
+            )
+        )
     if dom_fails:
         print("FAIL: domain mismatches:")
-        for line in dom_fails:
+        for col_name, line in dom_fails:
             print("  -", line)
-        return 1
+            findings.append(
+                Finding(
+                    layer=4,
+                    status="FAIL",
+                    check=f"domain:{col_name}",
+                    message=line,
+                )
+            )
+        return LayerResult(failure_count=1, findings=findings)
     suffix = " (some skipped per Layer 1)" if skipped else ""
     print(f"PASS: domain checks for annotated concept columns{suffix}.")
-    return 0
+    findings.append(
+        Finding(
+            layer=4,
+            status="PASS",
+            check="domain",
+            message=f"domain checks for annotated concept columns{suffix}",
+        )
+    )
+    return LayerResult(failure_count=0, findings=findings)
 
 
 def run_layer_5(
@@ -308,14 +468,15 @@ def run_layer_5(
     fq: str,
     missing_cols: set[str],
     sql_fn: SqlFn,
-) -> int:
+) -> LayerResult:
     """Layer 5: completeness (NOT NULL columns must have zero NULLs).
 
     Skips columns reported missing by Layer 1 — see ``_should_skip_check``.
     """
     print("== Layer 5: completeness (NOT NULL columns must have zero NULLs) ==")
+    findings: list[Finding] = []
     skipped: list[str] = []
-    null_fails: list[str] = []
+    null_fails: list[tuple[str, str]] = []
     total_rows = sql_fn(statement=f"SELECT COUNT(*) FROM {fq}")
     total = int(total_rows[0][0]) if total_rows and total_rows[0] else 0
     for c in cols:
@@ -330,14 +491,38 @@ def run_layer_5(
         n = int(cnt[0][0]) if cnt and cnt[0] else 0
         if n:
             rate = (n / total) if total else 0.0
-            null_fails.append(f"{col}: {n} NULL rows ({rate:.2%} of {total})")
+            null_fails.append((col, f"{col}: {n} NULL rows ({rate:.2%} of {total})"))
     for s in skipped:
         print(f"SKIP: {s}: column not in actual table (Layer 1)")
+        findings.append(
+            Finding(
+                layer=5,
+                status="SKIP",
+                check=f"not_null:{s}",
+                message="column not in actual table (Layer 1)",
+            )
+        )
     if null_fails:
         print("FAIL: unexpected NULLs in spec-required columns:")
-        for line in null_fails:
+        for col_name, line in null_fails:
             print("  -", line)
-        return 1
+            findings.append(
+                Finding(
+                    layer=5,
+                    status="FAIL",
+                    check=f"not_null:{col_name}",
+                    message=line,
+                )
+            )
+        return LayerResult(failure_count=1, findings=findings)
     suffix = " (some skipped per Layer 1)" if skipped else ""
     print(f"PASS: required (non-nullable) columns have no NULLs{suffix}.")
-    return 0
+    findings.append(
+        Finding(
+            layer=5,
+            status="PASS",
+            check="not_null",
+            message=f"required (non-nullable) columns have no NULLs{suffix}",
+        )
+    )
+    return LayerResult(failure_count=0, findings=findings)

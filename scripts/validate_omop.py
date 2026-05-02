@@ -136,13 +136,13 @@ def main() -> None:
 
     sql_fn: SqlFn = partial(_sql, w, warehouse_id=wh, catalog=cat, schema=sch)
 
-    failures = 0
-    l1_failures, missing_cols = run_layer_1(cols, cat, sch, tbl, sql_fn)
-    failures += l1_failures
-    failures += run_layer_2(cols, fq, sql_fn)
-    failures += run_layer_3(cols, fq, concept, missing_cols, sql_fn)
-    failures += run_layer_4(cols, fq, concept, missing_cols, sql_fn)
-    failures += run_layer_5(cols, fq, missing_cols, sql_fn)
+    r1 = run_layer_1(cols, cat, sch, tbl, sql_fn)
+    missing_cols = r1.missing_cols
+    failures = r1.failure_count
+    failures += run_layer_2(cols, fq, sql_fn).failure_count
+    failures += run_layer_3(cols, fq, concept, missing_cols, sql_fn).failure_count
+    failures += run_layer_4(cols, fq, concept, missing_cols, sql_fn).failure_count
+    failures += run_layer_5(cols, fq, missing_cols, sql_fn).failure_count
 
     print(f"\nSummary: {'FAILED' if failures else 'OK'} ({failures} layer(s) failed)")
     raise SystemExit(1 if failures else 0)
