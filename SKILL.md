@@ -5,21 +5,22 @@ license: MIT
 compatibility: Designed for Databricks Genie Code Agent mode launched from a notebook with a Python-capable cluster (serverless or classic). Genie Code launched from the catalog browser, a Genie Space, or the SQL editor is backed by a SQL warehouse and CANNOT run this skill's Step 6 Pydantic validator — see "Compute requirements" below. Requires databricks-sdk, pyyaml, pydantic. Run pipeline triggering uses Pipelines Editor native run when available, scripts/run_pipeline.py from notebooks.
 metadata:
   author: Samuel Selvan (Databricks SA)
-  version: "2.0"
+  version: "2.0.1"
   built_for_session: "2026-04-29 OMOP transform framework hands-on"
   v1_1_notes: "Vendor-neutralized; standalone YAML validator (no host-repo cd); workspace-scope deploy; canonical example flipped to fact-table shape."
   v1_2_notes: "STCM guidance reframed: source_to_concept_map UC table is the runtime source of truth; CSV seed at seed_data/source_to_concept_map_custom.csv is one of two write paths (alongside direct SQL/MERGE), not the only path. Added 'Adding source_to_concept_map mappings' section."
   v1_3_notes: "Compute requirements made explicit: skill requires a Python-capable notebook kernel; catalog browser / Genie Space / SQL editor surfaces (SQL warehouse compute) cannot run the Pydantic validator. Added 'Compute requirements' section. MANDATORY rule 2 now short-circuits with a verbatim user message instead of retrying when Python is unavailable."
   v1_4_notes: "Path A canonical example switched from INSERT to MERGE INTO with composite key (source_code, source_vocabulary_id) — matches src/01_load_vocabulary.py's verb so framework is internally consistent on STCM writes; idempotent on re-runs. INSERT demoted to 'first-bootstrap-only' aside."
   v1_6_notes: "Step 0 added for first-time project scaffolding via scripts/scaffold_omop_project.py (existing Step 0 'Discover source schema' content preserved as Step 1 subsection). Step 7 body tightened to inline scaffold-aware vs hand-authored DAG-wiring guidance with mandatory rules (full_refresh, depends_on, validate-before-deploy)."
-  v2_0_notes: "State-aware skill: bundle_state.py reads project state, classify_request branches Update / Replace / Different-table sub-paths, classify_batch reorders multi-table requests by OMOP DAG. Steps renumbered 1-8 with Step 4 (Update workflow, retry-with-fix-forward) and Step 5 (Generate workflow) as peer sub-paths. config_writer.py ships atomic writes with optional mtime-based optimistic concurrency; structural_changelog.py produces field-level Pydantic-schema-aware diffs. Validation-prominence template fires on materialization_diff after a successful pipeline run (Decision 14: prominent offer, respected decline, named trade-off, no enforcement). references/recommended_ci_config.md ships GitHub Actions and Azure DevOps Pipelines snippets for wiring Pydantic + databricks bundle validate into CI. .omop-skill-version marker file gates state-aware behavior. See MIGRATION-v1.6-to-v2.0.md for the v1.6→v2.0 crosswalk."
+  v2_0_notes: "State-aware skill: bundle_state.py reads project state, classify_request branches Update / Replace / Different-table sub-paths, classify_batch reorders multi-table requests by OMOP DAG. Steps renumbered 1-8 with Step 4 (Update workflow, retry-with-fix-forward) and Step 5 (Generate workflow) as peer sub-paths. config_writer.py ships atomic writes with optional mtime-based optimistic concurrency; structural_changelog.py produces field-level Pydantic-schema-aware diffs. Validation-prominence template fires on materialization_diff after a successful pipeline run (Decision 14: prominent offer, respected decline, named trade-off, no enforcement). references/recommended_ci_config.md ships GitHub Actions and Azure DevOps Pipelines snippets for wiring Pydantic + databricks bundle validate into CI."
+  v2_0_1_notes: "Scaffolder now takes an explicit bronze_target (catalog.schema) — eliminates the v2.0 hardcoded `bronze_schema: bronze_clinical` default that didn't match real EHR landing zones (Caboodle, Clarity, Lakeflow Connect). Default is a `<CHANGEME>`-flagged placeholder so unreplaced values stay loud. Cross-catalog consistency assertion across volume_target + core_target + bronze_target prevents typo'd-catalog scaffolds. v1.6 upgrade machinery removed (no customer ran v1.6 or v2.0 in production); the marker file survives as a forward-looking breadcrumb but no scaffolder behavior branches on it. Re-scaffold over an existing project (databricks.yml present) now refuses uniformly — no marker logic. SKILL.md adds a 'Source of truth' note clarifying databricks.yml ↔ discovery.yaml precedence."
 ---
 
 # OMOP Pipeline Builder
 
 Skill for authoring YAML-driven SDP (Spark Declarative Pipelines) transforms from EHR source bronze tables into OMOP CDM v5.4 tables in Unity Catalog, validating silver output, and triggering pipeline updates. Works with the shared config schema (`configs/_schema.yaml`) and the `source_to_concept_map` reference table in UC, which can be populated by direct SQL/MERGE or by the git-tracked bootstrap seed CSV at `seed_data/source_to_concept_map_custom.csv` (see [Adding source_to_concept_map mappings](#adding-source_to_concept_map-mappings)).
 
-**v2.0 framing.** This skill maintains a living, governed bundle in a UC Volume. Each invocation is a delta against the current state — generation, update, or replacement, with reviewer ratification at each step. The agent re-reads bundle state before every per-table flow, so it knows whether a config already exists, whether the table is already materialized in `core_target`, and whether the project has been scaffolded with the `.omop-skill-version` marker. See [`MIGRATION-v1.6-to-v2.0.md`](../../../MIGRATION-v1.6-to-v2.0.md) (at the repo root) for what changed for v1.6 customers.
+**Framing.** This skill maintains a living, governed bundle in a UC Volume. Each invocation is a delta against the current state — generation, update, or replacement, with reviewer ratification at each step. The agent re-reads bundle state before every per-table flow, so it knows whether a config already exists and whether the table is already materialized in `core_target`.
 
 ## Compute requirements (read before launching)
 
@@ -80,17 +81,15 @@ Skip this step if your team already has an OMOP build repo. This step is for
 the first time someone on your team is starting an OMOP CDM v5.4 build with
 this skill.
 
-> **State-aware skill.** Starting in v2.0, the skill re-reads bundle state at the start of every per-table flow (Step 2 onward). It checks for the `.omop-skill-version` marker, the existing `configs/<table>.yaml` files, and the materialized state of `core_target` in Unity Catalog. State drives branching — Update, Replace, and Generate are explicit sub-paths instead of silent regenerations. Scaffolding is the one-time setup that makes state-awareness safe; skip ahead to [Step 2](#step-2--confirm-target--check-existing-state) only if you have already scaffolded or you are running against an existing v1.6 project (the scaffolder will write the marker on demand without rebuilding the project tree — see [`MIGRATION-v1.6-to-v2.0.md`](../../../MIGRATION-v1.6-to-v2.0.md)).
+> **What scaffolding does and why you only do it once.** The scaffolder writes a working DAB-shaped project tree (bundle config, jobs DAG with all 14 OMOP tables as commented placeholders, src/ boilerplate, empty configs/ folder, seed_data template, README) into a customer-chosen path. It is **not idempotent**: re-running over an existing project (`databricks.yml` already present) refuses, on purpose. The skill writes configs into the project tree on every subsequent invocation; scaffolding only sets up the tree.
 
-The scaffolder generates a working DAB-shaped project: bundle config, jobs DAG
-with all 14 OMOP tables as commented placeholders, src/ boilerplate, empty
-configs/ folder, seed_data template, and a README. It also probes the silver
+The scaffolder also probes the silver
 schema for existing OMOP tables and surfaces them so the team can decide per
 table whether to keep them as-is or rebuild them through the skill.
 
 **To scaffold:** ask the agent something like "scaffold a new OMOP project."
-The agent collects three things conversationally and asks the customer to
-confirm each before writing files:
+The agent collects four things conversationally and asks the customer to
+confirm all of them before writing files:
 
 1. **`project_path`** — filesystem path where the project tree is written.
    Customer-chosen. UC Volume mount path strongly recommended:
@@ -105,10 +104,36 @@ confirm each before writing files:
    `CREATE VOLUME`, or their platform team), then resumes once the customer
    confirms.
 
-3. **`core_target`** — two-part UC name where OMOP tables live or will
+3. **`bronze_target`** — two-part UC name where the EHR landing-zone tables
+   live: `<catalog>.<schema>` (e.g., `cat.bronze_caboodle`,
+   `cat.bronze_clarity`, `cat.bronze_lakeflow`). **There is no safe default**
+   — bronze schemas come from your EHR ingest layer and the scaffolder
+   cannot guess. If you don't pass one, the scaffolder fills in a
+   `<CHANGEME — your bronze schema>` placeholder; the customer must edit
+   `databricks.yml` to replace it before the pipeline can read a bronze
+   table. Pass the actual value at scaffold time so the placeholder never
+   ships.
+
+4. **`core_target`** — two-part UC name where OMOP tables live or will
    materialize: `<catalog>.<schema>`. Defaults to same catalog as
    `volume_target`, schema `core_omop`. Override if the engineering and
    clinical catalogs are separated for governance reasons.
+
+The agent must echo all four values back before invoking the scaffolder, e.g.:
+
+> Confirming before I scaffold:
+> - **project_path:** `/Volumes/my_cat/raw/omop_artifacts/omop-build`
+> - **volume_target:** `my_cat.raw.omop_artifacts`
+> - **bronze_target:** `my_cat.bronze_caboodle`
+> - **core_target:** `my_cat.core_omop`
+>
+> All three UC targets share catalog `my_cat`. Proceed?
+
+**Cross-catalog refusal.** All three UC targets (volume, bronze, core) must
+share a single Unity Catalog. Cross-catalog OMOP builds (engineering and
+clinical catalogs separated) are real but unusual; the default scaffold
+refuses, naming all three values, so a typo'd catalog surfaces loudly
+before any disk write or SDK call.
 
 The agent runs `scripts/scaffold_omop_project.py` with the confirmed parameters
 and reports back what was written.
@@ -117,6 +142,8 @@ and reports back what was written.
 schemas, or Volumes. UC governance is owned by the customer's platform team
 and admins, not by this skill. The agent surfaces missing Volumes as an ask,
 not as an action it can take.
+
+> **Source of truth.** `databricks.yml` is the deployed artifact and wins on conflict — its `catalog`, `bronze_schema`, `core_schema`, and `config_volume` variables are what the pipeline actually reads at runtime. The agent's `discovery.yaml` (Step 3) is a per-user context cache that lets the next session start fast without re-asking; on session start, the agent reconciles `discovery.yaml` against UC and against `databricks.yml` and treats `discovery.yaml` as advisory if they disagree. Treat any divergence between `databricks.yml` and `discovery.yaml` as a stale cache, not a deployment bug — the customer's edits to `databricks.yml` are authoritative.
 
 **After scaffold:**
 
@@ -579,7 +606,7 @@ The offer is a courtesy, not a requirement — if the user declines, never ask a
 
 ### Step 7 — Run the pipeline and validate the materialized table
 
-With the YAML validated (Step 6), trigger the pipeline so it materializes the OMOP table, then run the post-build validator against the result. This step folds the v1.x "run" and "validate-output" steps into a single flow because they're tightly coupled — the validator only runs after the table materializes, and a validator failure sends you back to the pipeline run.
+With the YAML validated (Step 6), trigger the pipeline so it materializes the OMOP table, then run the post-build validator against the result. Pipeline run and post-build validation are one flow here because they're tightly coupled — the validator only runs after the table materializes, and a validator failure sends you back to the pipeline run.
 
 #### Run the pipeline (dual mechanism)
 

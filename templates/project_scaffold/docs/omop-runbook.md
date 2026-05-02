@@ -675,7 +675,7 @@ Click **Run All**.
 
 Navigate to **Catalog Explorer** → `{catalog}` → `core_omop` → `person` → **Lineage** tab. You should see:
 
-- Column-level lineage from `bronze_clinical.patient` → `core_omop.person`
+- Column-level lineage from `${bronze_schema}.patient` (e.g., `bronze_caboodle.patient`) → `core_omop.person`
 - The vocabulary reference tables (`reference.concept`, `reference.source_to_concept_map`) as upstream dependencies
 - Every column in `core_omop.person` traced back to its source expression
 
