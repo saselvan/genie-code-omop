@@ -592,6 +592,33 @@ python scripts/run_pipeline.py \
 
 If you only know the pipeline name, use `--pipeline-name` (the script resolves the ID via `list_pipelines`). The script polls every 10 seconds for up to 30 minutes and prints update state and events.
 
+#### Offer validation prominently when the table is newly materialized
+
+After the pipeline run completes, re-read bundle state and check `materialization_diff`. When the just-built table appears there (meaning it is newly present in `core_target` since the prior snapshot in this session), surface the validator offer prominently — its own paragraph, **bolded**, before any other follow-up:
+
+> Person table is materialized at `<catalog>.<core_schema>.person`.
+>
+> **Want me to run the OMOP fidelity validator?** It checks five layers against the OMOP CDM v5.4 spec — schema conformance, primary-key uniqueness, concept FK integrity, domain correctness, completeness. Takes about 30 seconds for `person`-sized tables; several minutes for the larger fact tables. Reply "yes" and I'll run it and surface findings.
+>
+> If you decline, your table goes to your CI/CD pipeline unvalidated against the spec. That's your team's call. Most teams want validation findings before merging the config to `main`.
+
+If the engineer accepts, run `scripts/validate_omop.py` and surface findings using the v1.4 review framing: "Validator found X issues. Here they are. Reviewer ratifies whether each is a real fidelity gap or acceptable variance for this build."
+
+If the engineer declines, acknowledge the decline once and continue to Step 8 (DAG wiring). Do not nag.
+
+**Trigger condition.** Throughout the session, whenever the skill calls `read_bundle_state`, it passes `previous_silver_tables` — the snapshot from the prior call in this session — so `materialization_diff` reflects what is newly materialized since the last view. When `materialization_diff` is non-empty for a table that was just generated in this session, the prominence template fires. Cross-session materializations — engineer ran the pipeline yesterday, opens a fresh chat today — do NOT fire prominence because there is no "previous" snapshot to diff against. The engineer can still request validation explicitly at any time; the prominence rule is purely about proactive offering on the materialization edge.
+
+**Pipeline rerun behavior.** If the engineer reruns the same pipeline (for example to fix data and re-materialize), the table will appear in `materialization_diff` again on the next state read, and the prominence template fires again. Re-validation on rerun is intended — the data changed.
+
+**Pipeline failure.** If the pipeline run fails, `materialization_diff` does NOT include the target table, so the prominence template does not fire. The engineer sees the failure surface from `scripts/run_pipeline.py` and remediates. Validation against a failed run is not offered.
+
+The skill does **NOT**:
+
+- Auto-run validation. The offer is the gate; the engineer's acceptance is the trigger.
+- Block subsequent workflow on a declined validation. The skill ships the validator and the offer; enforcement is your team's CI policy. See [`references/recommended_ci_config.md`](references/recommended_ci_config.md) for the documented CI integration patterns (GitHub Actions, Azure DevOps Pipelines).
+- Repeat the offer for the **same materialization** if the engineer has already declined. (A pipeline rerun produces a new materialization event and re-fires the offer — see "Pipeline rerun behavior" above. Decline is scoped to one materialization, not the whole session.)
+- Generate compliance documentation about the decline. The conversation log is the record.
+
 #### Validate via `scripts/validate_omop.py`
 
 Once the pipeline run is `COMPLETED` and the OMOP table is materialized, validate it:
@@ -625,7 +652,9 @@ databricks bundle validate -t production
 ```
 
 Commit the change through the team's normal Git workflow. The CI/CD pipeline
-handles deploy.
+handles deploy — see [`references/recommended_ci_config.md`](references/recommended_ci_config.md)
+for working GitHub Actions and Azure DevOps Pipelines snippets that wire the
+Pydantic schema validator and `databricks bundle validate` into your pipeline.
 
 If you skipped Step 1 (the team has an existing repo without scaffolded
 placeholders), add a new task block matching the shape:
@@ -832,6 +861,7 @@ If any fixtures fail after your change, the change broke the skill's contract. F
 - [`references/ehr_to_omop_mappings.md`](references/ehr_to_omop_mappings.md) — bronze → OMOP table and column mapping notes
 - [`references/vocabulary_domains.md`](references/vocabulary_domains.md) — domain ↔ vocabulary patterns and join strategies
 - [`references/omop_dag_dependencies.md`](references/omop_dag_dependencies.md) — Round 1–4 dependency chart for `resources/jobs.yml`
+- [`references/recommended_ci_config.md`](references/recommended_ci_config.md) — GitHub Actions and Azure DevOps Pipelines snippets for wiring Pydantic schema validation + `databricks bundle validate` into CI
 - [`templates/discovery.yaml`](templates/discovery.yaml) — file-shape reference for the optional `discovery.yaml` artifact (NOT a setup precondition)
 - [`scripts/generate_config.py`](scripts/generate_config.py) — bronze `DESCRIBE` → pure pass-through YAML stub
 - [`scripts/generate_source_mappings.py`](scripts/generate_source_mappings.py) — distinct codes → CSV in OHDSI `source_to_concept_map` shape (input for either bootstrap-CSV or direct-SQL paths; see [Adding source_to_concept_map mappings](#adding-source_to_concept_map-mappings))
