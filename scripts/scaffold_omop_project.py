@@ -76,6 +76,7 @@ class ScaffoldResult:
     project_path: str
     volume_target: str
     core_target: str
+    bronze_target: str
     existing_tables: list[str]
     detection_skipped_reason: str | None
     files_written: int
@@ -89,6 +90,40 @@ def _default_core_target(volume_target: str) -> str:
             f"core_target, got: {volume_target}"
         )
     return f"{parts[0]}.core_omop"
+
+
+def _default_bronze_target(volume_target: str) -> str:
+    """Derive a `<CHANGEME>`-flagged default bronze_target from volume_target.
+
+    Unlike `_default_core_target`, there is no safe inferable bronze schema —
+    bronze schemas come from the customer's EHR landing zone (Caboodle,
+    Clarity, Lakeflow Connect, etc.) and the scaffolder cannot guess it.
+    The `<CHANGEME>` pattern mirrors `notification_email` and `workspace.host`:
+    syntactically valid YAML, but obvious to the reader that the value must be
+    replaced before the pipeline can resolve a bronze table.
+    """
+    parts = volume_target.split(".")
+    if len(parts) < 1 or not parts[0]:
+        raise ValueError(
+            "volume_target must include a catalog to derive a default "
+            f"bronze_target, got: {volume_target}"
+        )
+    return f"{parts[0]}.<CHANGEME — your bronze schema>"
+
+
+def _validate_volume_target(volume_target: str) -> None:
+    """Raises ValueError if volume_target isn't three-part catalog.schema.volume.
+
+    Pulled out of `_verify_volume_exists` so the orchestrator can format-check
+    volume_target up front (before _assert_consistent_catalogs, before any SDK
+    call) without coupling the format check to the SDK roundtrip.
+    """
+    parts = volume_target.split(".")
+    if len(parts) != 3:
+        raise ValueError(
+            f"volume_target must be three-part catalog.schema.volume, "
+            f"got: {volume_target}"
+        )
 
 
 def _validate_core_target(core_target: str) -> None:
@@ -106,12 +141,63 @@ def _validate_core_target(core_target: str) -> None:
         )
 
 
+def _validate_bronze_target(bronze_target: str) -> None:
+    """Raises ValueError if bronze_target isn't exactly two parts (catalog.schema).
+
+    Mirrors `_validate_core_target`. The bronze_schema portion may be a
+    `<CHANGEME>` placeholder (default path) or a real schema name (explicit
+    path); either is two-part valid here. Pipeline-time use is what catches
+    an unreplaced placeholder.
+    """
+    parts = bronze_target.split(".")
+    if len(parts) != 2:
+        raise ValueError(
+            f"bronze_target must be two-part catalog.schema, got: {bronze_target}"
+        )
+
+
+def _assert_consistent_catalogs(
+    volume_target: str, core_target: str, bronze_target: str
+) -> None:
+    """Refuse scaffolds whose three targets span more than one Unity Catalog.
+
+    Cross-catalog OMOP builds are a real but unusual pattern (engineering and
+    clinical catalogs separated for governance). The default scaffold assumes
+    a single-catalog layout, which is the dominant case. If a customer needs
+    cross-catalog, they ask explicitly and we add an `--allow-cross-catalog`
+    flag — until then, refusing loudly here surfaces unintentional drift
+    (e.g., a typo'd catalog in bronze_target) before any files are written.
+
+    Fires before any disk writes or SDK calls so the failure is atomic. The
+    error names all three values so the customer can see which one is the
+    odd one out without re-reading their command line.
+    """
+    volume_catalog = volume_target.split(".")[0]
+    core_catalog = core_target.split(".")[0]
+    bronze_catalog = bronze_target.split(".")[0]
+    catalogs = {volume_catalog, core_catalog, bronze_catalog}
+    if len(catalogs) > 1:
+        raise ValueError(
+            "All three targets must share a single Unity Catalog. Got:\n"
+            f"  volume_target={volume_target} (catalog={volume_catalog})\n"
+            f"  core_target={core_target} (catalog={core_catalog})\n"
+            f"  bronze_target={bronze_target} (catalog={bronze_catalog})\n"
+            "Cross-catalog OMOP builds aren't supported by the default "
+            "scaffold; ask the maintainers for `--allow-cross-catalog` if "
+            "your governance model actually needs separate catalogs."
+        )
+
+
 def _render_databricks_yml(
-    volume_target: str, core_target: str, project_name: str
+    volume_target: str,
+    core_target: str,
+    bronze_target: str,
+    project_name: str,
 ) -> str:
     catalog = volume_target.split(".")[0]
     config_volume = volume_target.split(".")[2]
     core_schema = core_target.split(".")[1]
+    bronze_schema = bronze_target.split(".")[1]
     return f"""bundle:
   name: {project_name}
 
@@ -121,7 +207,7 @@ variables:
     default: {catalog}
   bronze_schema:
     description: Bronze schema with EHR source tables
-    default: bronze_clinical
+    default: {bronze_schema}
   core_schema:
     description: Schema where OMOP core tables materialize (silver layer)
     default: {core_schema}
@@ -195,11 +281,22 @@ def _render_readme(
     project_name: str,
     volume_target: str,
     core_target: str,
+    bronze_target: str,
     existing_tables: list[str],
     detection_skipped_reason: str | None,
 ) -> str:
     existing_section = _render_existing_tables_section(
         core_target, existing_tables, detection_skipped_reason
+    )
+    bronze_schema = bronze_target.split(".")[1]
+    bronze_changeme_block = (
+        f"\n> **`<CHANGEME>` placeholder.** `bronze_target` defaulted to "
+        f"`{bronze_target}`. Replace `<CHANGEME — your bronze schema>` in "
+        "`databricks.yml`'s `bronze_schema.default` with the actual schema "
+        "where your EHR landing-zone tables live (e.g. `bronze_caboodle`, "
+        "`bronze_clarity`, `bronze_lakeflow`) before running the pipeline.\n"
+        if "<CHANGEME" in bronze_schema
+        else ""
     )
     return f"""# {project_name}
 
@@ -221,6 +318,10 @@ OMOP CDM v5.4 build project, scaffolded by `omop-pipeline-builder`.
 
 Bundle config Volume: `{volume_target}`
 
+## Bronze schema
+
+EHR source tables read from: `{bronze_target}`
+{bronze_changeme_block}
 ## Core schema
 
 OMOP core tables materialize in: `{core_target}`
@@ -279,6 +380,7 @@ def scaffold_project(
     project_path: str,
     volume_target: str,
     core_target: str | None = None,
+    bronze_target: str | None = None,
     project_name: str = "omop-build",
     profile: str | None = None,
 ) -> ScaffoldResult:
@@ -295,6 +397,11 @@ def scaffold_project(
         core_target: Two-part UC name (catalog.schema) where OMOP tables
             live or will materialize. Defaults to <catalog>.core_omop, where
             <catalog> is the catalog portion of volume_target.
+        bronze_target: Two-part UC name (catalog.schema) where the EHR
+            landing-zone tables live. Defaults to a `<CHANGEME>`-flagged
+            placeholder under volume_target's catalog — there is no safe
+            inferable bronze schema, so the customer must pass the real
+            value or replace the placeholder before pipeline-time.
         project_name: Bundle and project identifier.
         profile: Optional Databricks CLI profile for SDK auth.
 
@@ -306,7 +413,9 @@ def scaffold_project(
             accessible. Agent catches and asks customer to create.
         ValueError: if project_path already contains a databricks.yml
             (refuse to scaffold over any existing project — start over with
-            a fresh path), or if volume_target / core_target are malformed.
+            a fresh path); if volume_target / core_target / bronze_target
+            are malformed; or if the three targets don't share a single
+            Unity Catalog.
     """
     target = Path(project_path)
     if (target / "databricks.yml").exists():
@@ -317,8 +426,15 @@ def scaffold_project(
             "project_path."
         )
 
+    # Format-validate all three targets before any disk write or SDK call so
+    # malformed inputs surface atomically (no partial writes, no SDK roundtrip
+    # against a typo'd volume).
+    _validate_volume_target(volume_target)
     core_target = core_target or _default_core_target(volume_target)
     _validate_core_target(core_target)
+    bronze_target = bronze_target or _default_bronze_target(volume_target)
+    _validate_bronze_target(bronze_target)
+    _assert_consistent_catalogs(volume_target, core_target, bronze_target)
 
     _verify_volume_exists(volume_target, profile=profile)
 
@@ -339,6 +455,7 @@ def scaffold_project(
         target=target,
         volume_target=volume_target,
         core_target=core_target,
+        bronze_target=bronze_target,
         project_name=project_name,
         existing_tables=existing,
         detection_skipped_reason=skip_reason,
@@ -352,6 +469,7 @@ def scaffold_project(
         project_path=str(target.resolve()),
         volume_target=volume_target,
         core_target=core_target,
+        bronze_target=bronze_target,
         existing_tables=existing,
         detection_skipped_reason=skip_reason,
         files_written=files_written,
@@ -366,12 +484,7 @@ def _verify_volume_exists(volume_target: str, profile: str | None = None) -> Non
     "doesn't exist" and "exists but you can't see it" — both require the
     customer to take action through UC governance.
     """
-    parts = volume_target.split(".")
-    if len(parts) != 3:
-        raise ValueError(
-            f"volume_target must be three-part catalog.schema.volume, "
-            f"got: {volume_target}"
-        )
+    _validate_volume_target(volume_target)
     full_volume_name = volume_target
 
     try:
@@ -421,6 +534,7 @@ def _write_templated_files(
     target: Path,
     volume_target: str,
     core_target: str,
+    bronze_target: str,
     project_name: str,
     existing_tables: list[str],
     detection_skipped_reason: str | None,
@@ -429,6 +543,7 @@ def _write_templated_files(
     databricks_yml = _render_databricks_yml(
         volume_target=volume_target,
         core_target=core_target,
+        bronze_target=bronze_target,
         project_name=project_name,
     )
     (target / "databricks.yml").write_text(databricks_yml, encoding="utf-8")
@@ -437,6 +552,7 @@ def _write_templated_files(
         project_name=project_name,
         volume_target=volume_target,
         core_target=core_target,
+        bronze_target=bronze_target,
         existing_tables=existing_tables,
         detection_skipped_reason=detection_skipped_reason,
     )
@@ -490,6 +606,16 @@ def _cli() -> None:
             "Defaults to <volume-target-catalog>.core_omop"
         ),
     )
+    parser.add_argument(
+        "--bronze-target",
+        default=None,
+        help=(
+            "Two-part UC name: catalog.schema. The schema where your EHR "
+            "landing-zone tables live (e.g. cat.bronze_caboodle). Defaults "
+            "to a <CHANGEME>-flagged placeholder you must edit before "
+            "running the pipeline."
+        ),
+    )
     parser.add_argument("--project-name", default="omop-build")
     parser.add_argument(
         "--profile",
@@ -503,6 +629,7 @@ def _cli() -> None:
             project_path=args.project_path,
             volume_target=args.volume_target,
             core_target=args.core_target,
+            bronze_target=args.bronze_target,
             project_name=args.project_name,
             profile=args.profile,
         )
@@ -523,6 +650,7 @@ def _cli() -> None:
 
     print(f"Scaffolded project at: {result.project_path}")
     print(f"  volume_target: {result.volume_target}")
+    print(f"  bronze_target: {result.bronze_target}")
     print(f"  core_target: {result.core_target}")
     print(f"  files written: {result.files_written}")
     print(f"  skill version stamped: {_CURRENT_SKILL_VERSION}")
