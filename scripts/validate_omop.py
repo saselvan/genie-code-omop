@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import argparse
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 from databricks.sdk import WorkspaceClient
+from databricks.sdk.errors import InvalidParameterValue, NotFound
 from databricks.sdk.service.sql import StatementState
 
 from _warehouse import resolve_warehouse_id
@@ -46,7 +49,25 @@ def _sql(
         kwargs["catalog"] = catalog
     if schema:
         kwargs["schema"] = schema
-    resp = w.statement_execution.execute_statement(**kwargs)
+    try:
+        resp = w.statement_execution.execute_statement(**kwargs)
+    except (InvalidParameterValue, NotFound) as e:
+        # Wrap warehouse-related SDK errors in a clean SystemExit. The SDK
+        # raises InvalidParameterValue for malformed/empty IDs (message
+        # contains "endpoint id") and NotFound for valid-format-but-missing
+        # IDs (message contains "warehouse"). Other Invalid/NotFound errors
+        # (e.g. table-not-found during a Layer 1 query) propagate normally
+        # so genuine bugs keep their tracebacks. Match _warehouse.py error
+        # style: one-line, names the resolution paths, no traceback.
+        msg = str(e).strip()
+        low = msg.lower()
+        if "endpoint" in low or "warehouse" in low:
+            raise SystemExit(
+                f"Invalid SQL warehouse: {msg} "
+                "Verify with `databricks warehouses list`, pass --warehouse-id, "
+                "or set DATABRICKS_WAREHOUSE_ID."
+            ) from e
+        raise
     if resp.status.state != StatementState.SUCCEEDED:
         err = getattr(resp.status, "error", None)
         msg = getattr(err, "message", None) or str(resp.status.state)
@@ -62,6 +83,21 @@ def _sql(
 
 def _norm_type(t: str) -> str:
     return re.sub(r"\s+", "", t.upper().replace("NOTNULL", ""))
+
+
+def _should_skip_check(column_name: str, missing_cols: set[str]) -> bool:
+    """Return True if this column was reported missing from the actual table.
+
+    Layers 3, 4, 5 use this to skip per-column SQL operations on columns that
+    don't exist in the actual table. Without the skip, those operations raise
+    UNRESOLVED_COLUMN at SQL parse time, producing an uncaught Spark traceback.
+    Layer 1 already reports the column as missing; re-querying it adds a
+    traceback without adding information.
+
+    The lookup is case-insensitive against ``missing_cols``, which is
+    conventionally lowercased by ``run_layer_1``.
+    """
+    return column_name.lower() in missing_cols
 
 
 def parse_omop_spec_md(text: str) -> dict[str, list[ColSpec]]:
@@ -127,6 +163,233 @@ def parse_omop_spec_md(text: str) -> dict[str, list[ColSpec]]:
     return out
 
 
+SqlFn = Callable[..., list[list[Any]]]
+
+
+def run_layer_1(
+    cols: list[ColSpec],
+    cat: str,
+    sch: str,
+    tbl: str,
+    sql_fn: SqlFn,
+) -> tuple[int, set[str]]:
+    """Layer 1: schema (columns + loose types).
+
+    Returns ``(layer_failures, missing_cols_lowercased)``. The
+    ``missing_cols`` set is consumed by Layers 3, 4, 5 to skip per-column
+    SQL on columns that don't exist in the actual table — see
+    ``_should_skip_check`` for the rationale.
+    """
+    print("== Layer 1: schema (columns + loose types) ==")
+    info_sql = f"""
+SELECT LOWER(column_name) AS c, data_type, full_data_type
+FROM `{cat}`.information_schema.columns
+WHERE table_catalog = '{cat}' AND table_schema = '{sch}' AND table_name = '{tbl}'
+"""
+    irows = sql_fn(statement=info_sql)
+    actual = {str(r[0]).lower(): (str(r[1]), str(r[2]) if len(r) > 2 else "") for r in irows}
+    spec_names = {c.name.lower() for c in cols}
+    missing = sorted(spec_names - set(actual.keys()))
+    extra = sorted(set(actual.keys()) - spec_names)
+    type_mismatch: list[str] = []
+    for c in cols:
+        a = actual.get(c.name.lower())
+        if not a:
+            continue
+        dt, fdt = a
+        blob = _norm_type(fdt or dt)
+        exp = _norm_type(c.sql_type)
+        if exp in ("INT", "INTEGER") and ("INT" in blob or "DECIMAL" in blob):
+            continue
+        if exp == "BIGINT" and ("BIGINT" in blob or "LONG" in blob):
+            continue
+        if exp in ("STRING", "VARCHAR", "CHAR") and (
+            "STRING" in blob or "VARCHAR" in blob or "CHAR" in blob
+        ):
+            continue
+        if exp in ("DATE",) and "DATE" in blob:
+            continue
+        if exp in ("TIMESTAMP",) and ("TIMESTAMP" in blob or "TIMESTAMPTZ" in blob):
+            continue
+        if exp in ("FLOAT", "DOUBLE", "REAL") and (
+            "FLOAT" in blob or "DOUBLE" in blob or "REAL" in blob
+        ):
+            continue
+        type_mismatch.append(f"{c.name}: expected ~{c.sql_type}, got {fdt or dt}")
+
+    failures = 0
+    if missing or extra or type_mismatch:
+        failures = 1
+        if missing:
+            print(f"FAIL: missing columns: {missing}")
+        if extra:
+            print(f"WARN: extra columns not in spec: {extra}")
+        if type_mismatch:
+            print("FAIL: type mismatches:")
+            for m in type_mismatch:
+                print("  -", m)
+    else:
+        print("PASS: column names and coarse types align with spec.")
+    return failures, set(missing)
+
+
+def run_layer_2(
+    cols: list[ColSpec],
+    fq: str,
+    sql_fn: SqlFn,
+) -> int:
+    """Layer 2: PK uniqueness.
+
+    NOTE: Layer 2 has the same spec/actual coupling pattern as Layers 3, 4, 5
+    — if a spec PK column is missing from the actual table, the GROUP BY
+    will UNRESOLVED_COLUMN. v2.0.4b deferred this fix per BACKLOG: Phase 4
+    did not surface a Layer 2 symptom, and the cross-row uniqueness failure
+    mode shape doesn't obviously map to the spec/actual mismatch case.
+    Revisit during a focused review against v2.0.4c-merged main.
+    """
+    print("== Layer 2: primary key uniqueness ==")
+    pks = [c.name for c in cols if c.pk]
+    if not pks:
+        print("WARN: no PK marked in spec; skipping uniqueness check.")
+        return 0
+    pk_list = ", ".join(pks)
+    dup_sql = f"""
+SELECT {pk_list}, COUNT(*) AS c FROM {fq} GROUP BY {pk_list} HAVING COUNT(*) > 1 LIMIT 20
+"""
+    dups = sql_fn(statement=dup_sql)
+    if dups:
+        print(f"FAIL: duplicate PK groups (showing up to 20): {dups}")
+        return 1
+    print("PASS: no duplicate primary keys.")
+    return 0
+
+
+def run_layer_3(
+    cols: list[ColSpec],
+    fq: str,
+    concept: str,
+    missing_cols: set[str],
+    sql_fn: SqlFn,
+) -> int:
+    """Layer 3: referential integrity to concept.
+
+    Skips ``*_concept_id`` columns reported missing by Layer 1 — see
+    ``_should_skip_check``. Skipped columns emit a SKIP line and do not
+    increment failures (Layer 1 already counted them).
+    """
+    print("== Layer 3: referential integrity to concept ==")
+    concept_cols = [c for c in cols if c.name.endswith("_concept_id")]
+    skipped: list[str] = []
+    bad_rows: list[tuple[str, int]] = []
+    for c in concept_cols:
+        if _should_skip_check(c.name, missing_cols):
+            skipped.append(c.name)
+            continue
+        q = f"""
+SELECT COUNT(*) FROM {fq} s
+LEFT JOIN {concept} c ON c.concept_id = s.`{c.name}`
+WHERE s.`{c.name}` IS NOT NULL AND s.`{c.name}` <> 0 AND c.concept_id IS NULL
+"""
+        cnt = sql_fn(statement=q)
+        n = int(cnt[0][0]) if cnt and cnt[0] else 0
+        if n:
+            bad_rows.append((c.name, n))
+    for s in skipped:
+        print(f"SKIP: {s}: column not in actual table (Layer 1)")
+    if bad_rows:
+        print("FAIL: concept_id values not found in reference.concept (excluding 0):")
+        for col, n in bad_rows:
+            print(f"  - {col}: {n} rows")
+        return 1
+    suffix = " (some skipped per Layer 1)" if skipped else ""
+    print(f"PASS: all non-null non-zero concept_ids resolve to reference.concept{suffix}.")
+    return 0
+
+
+def run_layer_4(
+    cols: list[ColSpec],
+    fq: str,
+    concept: str,
+    missing_cols: set[str],
+    sql_fn: SqlFn,
+) -> int:
+    """Layer 4: domain conformance (where Domain is documented).
+
+    Skips columns reported missing by Layer 1 — see ``_should_skip_check``.
+    """
+    print("== Layer 4: domain conformance (where Domain is documented) ==")
+    skipped: list[str] = []
+    dom_fails: list[str] = []
+    for c in cols:
+        if not c.domain or not c.name.endswith("_concept_id"):
+            continue
+        if _should_skip_check(c.name, missing_cols):
+            skipped.append(c.name)
+            continue
+        dom = c.domain.replace("'", "''")
+        col = c.name.replace("`", "")
+        q = f"""
+SELECT COUNT(*) FROM {fq} s
+JOIN {concept} c ON c.concept_id = s.`{col}`
+WHERE s.`{col}` IS NOT NULL AND s.`{col}` <> 0
+  AND c.domain_id <> '{dom}'
+"""
+        cnt = sql_fn(statement=q)
+        n = int(cnt[0][0]) if cnt and cnt[0] else 0
+        if n:
+            dom_fails.append(f"{col}: {n} rows with domain_id <> {c.domain}")
+    for s in skipped:
+        print(f"SKIP: {s}: column not in actual table (Layer 1)")
+    if dom_fails:
+        print("FAIL: domain mismatches:")
+        for line in dom_fails:
+            print("  -", line)
+        return 1
+    suffix = " (some skipped per Layer 1)" if skipped else ""
+    print(f"PASS: domain checks for annotated concept columns{suffix}.")
+    return 0
+
+
+def run_layer_5(
+    cols: list[ColSpec],
+    fq: str,
+    missing_cols: set[str],
+    sql_fn: SqlFn,
+) -> int:
+    """Layer 5: completeness (NOT NULL columns must have zero NULLs).
+
+    Skips columns reported missing by Layer 1 — see ``_should_skip_check``.
+    """
+    print("== Layer 5: completeness (NOT NULL columns must have zero NULLs) ==")
+    skipped: list[str] = []
+    null_fails: list[str] = []
+    total_rows = sql_fn(statement=f"SELECT COUNT(*) FROM {fq}")
+    total = int(total_rows[0][0]) if total_rows and total_rows[0] else 0
+    for c in cols:
+        if c.nullable:
+            continue
+        if _should_skip_check(c.name, missing_cols):
+            skipped.append(c.name)
+            continue
+        col = c.name.replace("`", "")
+        q = f"SELECT COUNT(*) FROM {fq} WHERE `{col}` IS NULL"
+        cnt = sql_fn(statement=q)
+        n = int(cnt[0][0]) if cnt and cnt[0] else 0
+        if n:
+            rate = (n / total) if total else 0.0
+            null_fails.append(f"{col}: {n} NULL rows ({rate:.2%} of {total})")
+    for s in skipped:
+        print(f"SKIP: {s}: column not in actual table (Layer 1)")
+    if null_fails:
+        print("FAIL: unexpected NULLs in spec-required columns:")
+        for line in null_fails:
+            print("  -", line)
+        return 1
+    suffix = " (some skipped per Layer 1)" if skipped else ""
+    print(f"PASS: required (non-nullable) columns have no NULLs{suffix}.")
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate an OMOP table with five layers.")
     parser.add_argument("--table", required=True, help="FQN catalog.schema.table")
@@ -180,159 +443,15 @@ def main() -> None:
     fq = f"`{cat}`.`{sch}`.`{tbl}`"
     concept = f"`{cat}`.`{args.ref_schema}`.concept"
 
+    sql_fn: SqlFn = partial(_sql, w, warehouse_id=wh, catalog=cat, schema=sch)
+
     failures = 0
-
-    # --- Layer 1: schema ---
-    print("== Layer 1: schema (columns + loose types) ==")
-    info_sql = f"""
-SELECT LOWER(column_name) AS c, data_type, full_data_type
-FROM `{cat}`.information_schema.columns
-WHERE table_catalog = '{cat}' AND table_schema = '{sch}' AND table_name = '{tbl}'
-"""
-    irows = _sql(w, warehouse_id=wh, statement=info_sql, catalog=cat, schema=sch)
-    actual = {str(r[0]).lower(): (str(r[1]), str(r[2]) if len(r) > 2 else "") for r in irows}
-    spec_names = {c.name.lower() for c in cols}
-    missing = sorted(spec_names - set(actual.keys()))
-    extra = sorted(set(actual.keys()) - spec_names)
-    type_mismatch: list[str] = []
-    for c in cols:
-        a = actual.get(c.name.lower())
-        if not a:
-            continue
-        dt, fdt = a
-        blob = _norm_type(fdt or dt)
-        exp = _norm_type(c.sql_type)
-        if exp in ("INT", "INTEGER") and ("INT" in blob or "DECIMAL" in blob):
-            continue
-        if exp == "BIGINT" and ("BIGINT" in blob or "LONG" in blob):
-            continue
-        if exp in ("STRING", "VARCHAR", "CHAR") and (
-            "STRING" in blob or "VARCHAR" in blob or "CHAR" in blob
-        ):
-            continue
-        if exp in ("DATE",) and "DATE" in blob:
-            continue
-        if exp in ("TIMESTAMP",) and ("TIMESTAMP" in blob or "TIMESTAMPTZ" in blob):
-            continue
-        if exp in ("FLOAT", "DOUBLE", "REAL") and (
-            "FLOAT" in blob or "DOUBLE" in blob or "REAL" in blob
-        ):
-            continue
-        type_mismatch.append(f"{c.name}: expected ~{c.sql_type}, got {fdt or dt}")
-
-    if missing or extra or type_mismatch:
-        failures += 1
-        if missing:
-            print(f"FAIL: missing columns: {missing}")
-        if extra:
-            print(f"WARN: extra columns not in spec: {extra}")
-        if type_mismatch:
-            print("FAIL: type mismatches:")
-            for m in type_mismatch:
-                print("  -", m)
-    else:
-        print("PASS: column names and coarse types align with spec.")
-
-    # --- Layer 2: PK uniqueness ---
-    print("== Layer 2: primary key uniqueness ==")
-    pks = [c.name for c in cols if c.pk]
-    if not pks:
-        print("WARN: no PK marked in spec; skipping uniqueness check.")
-    else:
-        pk_list = ", ".join(pks)
-        dup_sql = f"""
-SELECT {pk_list}, COUNT(*) AS c FROM {fq} GROUP BY {pk_list} HAVING COUNT(*) > 1 LIMIT 20
-"""
-        dups = _sql(w, warehouse_id=wh, statement=dup_sql, catalog=cat, schema=sch)
-        if dups:
-            failures += 1
-            print(f"FAIL: duplicate PK groups (showing up to 20): {dups}")
-        else:
-            print("PASS: no duplicate primary keys.")
-
-    # --- Layer 3: referential integrity to concept ---
-    print("== Layer 3: referential integrity to concept ==")
-    concept_cols = [
-        c.name
-        for c in cols
-        if c.name.endswith("_concept_id")
-        or c.name in ("provider_id", "care_site_id", "location_id")
-    ]
-    # provider/location/care_site are not concept — filter
-    concept_cols = [c for c in concept_cols if c.endswith("_concept_id")]
-    bad_rows: list[list[Any]] = []
-    for col in concept_cols:
-        q = f"""
-SELECT COUNT(*) FROM {fq} s
-LEFT JOIN {concept} c ON c.concept_id = s.`{col}`
-WHERE s.`{col}` IS NOT NULL AND s.`{col}` <> 0 AND c.concept_id IS NULL
-"""
-        cnt = _sql(w, warehouse_id=wh, statement=q, catalog=cat, schema=sch)
-        n = int(cnt[0][0]) if cnt and cnt[0] else 0
-        if n:
-            failures += 1
-            bad_rows.append([col, n])
-    if bad_rows:
-        print("FAIL: concept_id values not found in reference.concept (excluding 0):")
-        for col, n in bad_rows:
-            print(f"  - {col}: {n} rows")
-    else:
-        print("PASS: all non-null non-zero concept_ids resolve to reference.concept.")
-
-    # --- Layer 4: domain conformance ---
-    print("== Layer 4: domain conformance (where Domain is documented) ==")
-    dom_fails: list[str] = []
-    for c in cols:
-        if not c.domain or not c.name.endswith("_concept_id"):
-            continue
-        dom = c.domain.replace("'", "''")
-        col = c.name.replace("`", "")
-        q = f"""
-SELECT COUNT(*) FROM {fq} s
-JOIN {concept} c ON c.concept_id = s.`{col}`
-WHERE s.`{col}` IS NOT NULL AND s.`{col}` <> 0
-  AND c.domain_id <> '{dom}'
-"""
-        cnt = _sql(w, warehouse_id=wh, statement=q, catalog=cat, schema=sch)
-        n = int(cnt[0][0]) if cnt and cnt[0] else 0
-        if n:
-            failures += 1
-            dom_fails.append(f"{col}: {n} rows with domain_id <> {c.domain}")
-    if dom_fails:
-        print("FAIL: domain mismatches:")
-        for line in dom_fails:
-            print("  -", line)
-    else:
-        print("PASS: domain checks for annotated concept columns.")
-
-    # --- Layer 5: completeness / null-rate ---
-    print("== Layer 5: completeness (NOT NULL columns must have zero NULLs) ==")
-    null_fails: list[str] = []
-    total_rows = _sql(
-        w,
-        warehouse_id=wh,
-        statement=f"SELECT COUNT(*) FROM {fq}",
-        catalog=cat,
-        schema=sch,
-    )
-    total = int(total_rows[0][0]) if total_rows and total_rows[0] else 0
-    for c in cols:
-        if c.nullable:
-            continue
-        col = c.name.replace("`", "")
-        q = f"SELECT COUNT(*) FROM {fq} WHERE `{col}` IS NULL"
-        cnt = _sql(w, warehouse_id=wh, statement=q, catalog=cat, schema=sch)
-        n = int(cnt[0][0]) if cnt and cnt[0] else 0
-        if n:
-            failures += 1
-            rate = (n / total) if total else 0.0
-            null_fails.append(f"{col}: {n} NULL rows ({rate:.2%} of {total})")
-    if null_fails:
-        print("FAIL: unexpected NULLs in spec-required columns:")
-        for line in null_fails:
-            print("  -", line)
-    else:
-        print("PASS: required (non-nullable) columns have no NULLs.")
+    l1_failures, missing_cols = run_layer_1(cols, cat, sch, tbl, sql_fn)
+    failures += l1_failures
+    failures += run_layer_2(cols, fq, sql_fn)
+    failures += run_layer_3(cols, fq, concept, missing_cols, sql_fn)
+    failures += run_layer_4(cols, fq, concept, missing_cols, sql_fn)
+    failures += run_layer_5(cols, fq, missing_cols, sql_fn)
 
     print(f"\nSummary: {'FAILED' if failures else 'OK'} ({failures} layer(s) failed)")
     raise SystemExit(1 if failures else 0)
