@@ -59,6 +59,30 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | discharged_to_source_value | STRING | Y | N | | |
 | preceding_visit_occurrence_id | BIGINT | Y | N | visit_occurrence.visit_occurrence_id | |
 
+## visit_detail
+
+| Column | Type | Nullable | PK | FK | Domain |
+|--------|------|----------|----|----|--------|
+| visit_detail_id | BIGINT | N | Y | | |
+| person_id | BIGINT | N | N | person.person_id | |
+| visit_detail_concept_id | INT | N | N | concept.concept_id | Visit |
+| visit_detail_start_date | DATE | N | N | | |
+| visit_detail_start_datetime | TIMESTAMP | Y | N | | |
+| visit_detail_end_date | DATE | N | N | | |
+| visit_detail_end_datetime | TIMESTAMP | Y | N | | |
+| visit_detail_type_concept_id | INT | N | N | concept.concept_id | Type Concept |
+| provider_id | BIGINT | Y | N | provider.provider_id | |
+| care_site_id | BIGINT | Y | N | care_site.care_site_id | |
+| visit_detail_source_value | STRING | Y | N | | |
+| visit_detail_source_concept_id | INT | Y | N | concept.concept_id | |
+| admitted_from_concept_id | INT | Y | N | concept.concept_id | Visit |
+| admitted_from_source_value | STRING | Y | N | | |
+| discharged_to_source_value | STRING | Y | N | | |
+| discharged_to_concept_id | INT | Y | N | concept.concept_id | Visit |
+| preceding_visit_detail_id | BIGINT | Y | N | visit_detail.visit_detail_id | |
+| parent_visit_detail_id | BIGINT | Y | N | visit_detail.visit_detail_id | |
+| visit_occurrence_id | BIGINT | N | N | visit_occurrence.visit_occurrence_id | |
+
 ## condition_occurrence
 
 | Column | Type | Nullable | PK | FK | Domain |
@@ -128,6 +152,30 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | route_source_value | STRING | Y | N | | |
 | dose_unit_source_value | STRING | Y | N | | |
 
+## device_exposure
+
+| Column | Type | Nullable | PK | FK | Domain |
+|--------|------|----------|----|----|--------|
+| device_exposure_id | BIGINT | N | Y | | |
+| person_id | BIGINT | N | N | person.person_id | |
+| device_concept_id | INT | N | N | concept.concept_id | Device |
+| device_exposure_start_date | DATE | N | N | | |
+| device_exposure_start_datetime | TIMESTAMP | Y | N | | |
+| device_exposure_end_date | DATE | Y | N | | |
+| device_exposure_end_datetime | TIMESTAMP | Y | N | | |
+| device_type_concept_id | INT | N | N | concept.concept_id | Type Concept |
+| unique_device_id | STRING | Y | N | | |
+| production_id | STRING | Y | N | | |
+| quantity | INT | Y | N | | |
+| provider_id | BIGINT | Y | N | provider.provider_id | |
+| visit_occurrence_id | BIGINT | Y | N | visit_occurrence.visit_occurrence_id | |
+| visit_detail_id | BIGINT | Y | N | visit_detail.visit_detail_id | |
+| device_source_value | STRING | Y | N | | |
+| device_source_concept_id | INT | Y | N | concept.concept_id | |
+| unit_concept_id | INT | Y | N | concept.concept_id | Unit |
+| unit_source_value | STRING | Y | N | | |
+| unit_source_concept_id | INT | Y | N | concept.concept_id | |
+
 ## measurement
 
 | Column | Type | Nullable | PK | FK | Domain |
@@ -192,6 +240,66 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | cause_concept_id | INT | Y | N | concept.concept_id | |
 | cause_source_value | STRING | Y | N | | |
 | cause_source_concept_id | INT | Y | N | concept.concept_id | |
+
+## note
+
+| Column | Type | Nullable | PK | FK | Domain |
+|--------|------|----------|----|----|--------|
+| note_id | BIGINT | N | Y | | |
+| person_id | BIGINT | N | N | person.person_id | |
+| note_date | DATE | N | N | | |
+| note_datetime | TIMESTAMP | Y | N | | |
+| note_type_concept_id | INT | N | N | concept.concept_id | Type Concept |
+| note_class_concept_id | INT | N | N | concept.concept_id | |
+| note_title | STRING | Y | N | | |
+| note_text | STRING | N | N | | |
+| encoding_concept_id | INT | N | N | concept.concept_id | |
+| language_concept_id | INT | N | N | concept.concept_id | |
+| provider_id | BIGINT | Y | N | provider.provider_id | |
+| visit_occurrence_id | BIGINT | Y | N | visit_occurrence.visit_occurrence_id | |
+| visit_detail_id | BIGINT | Y | N | visit_detail.visit_detail_id | |
+| note_source_value | STRING | Y | N | | |
+| note_event_id | BIGINT | Y | N | | |
+| note_event_field_concept_id | INT | Y | N | concept.concept_id | |
+
+## note_nlp
+
+| Column | Type | Nullable | PK | FK | Domain |
+|--------|------|----------|----|----|--------|
+| note_nlp_id | BIGINT | N | Y | | |
+| note_id | BIGINT | N | N | | |
+| section_concept_id | INT | Y | N | concept.concept_id | |
+| snippet | STRING | Y | N | | |
+| offset | STRING | Y | N | | |
+| lexical_variant | STRING | N | N | | |
+| note_nlp_concept_id | INT | Y | N | concept.concept_id | |
+| note_nlp_source_concept_id | INT | Y | N | concept.concept_id | |
+| nlp_system | STRING | Y | N | | |
+| nlp_date | DATE | N | N | | |
+| nlp_datetime | TIMESTAMP | Y | N | | |
+| term_exists | STRING | Y | N | | |
+| term_temporal | STRING | Y | N | | |
+| term_modifiers | STRING | Y | N | | |
+
+## specimen
+
+| Column | Type | Nullable | PK | FK | Domain |
+|--------|------|----------|----|----|--------|
+| specimen_id | BIGINT | N | Y | | |
+| person_id | BIGINT | N | N | person.person_id | |
+| specimen_concept_id | INT | N | N | concept.concept_id | Specimen |
+| specimen_type_concept_id | INT | N | N | concept.concept_id | Type Concept |
+| specimen_date | DATE | N | N | | |
+| specimen_datetime | TIMESTAMP | Y | N | | |
+| quantity | FLOAT | Y | N | | |
+| unit_concept_id | INT | Y | N | concept.concept_id | Unit |
+| anatomic_site_concept_id | INT | Y | N | concept.concept_id | Spec Anatomic Site |
+| disease_status_concept_id | INT | Y | N | concept.concept_id | |
+| specimen_source_id | STRING | Y | N | | |
+| specimen_source_value | STRING | Y | N | | |
+| unit_source_value | STRING | Y | N | | |
+| anatomic_site_source_value | STRING | Y | N | | |
+| disease_status_source_value | STRING | Y | N | | |
 
 ## location
 
@@ -259,3 +367,15 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | drug_era_end_date | DATE | N | N | | |
 | drug_exposure_count | INT | Y | N | | |
 | gap_days | INT | Y | N | | |
+
+## dose_era
+
+| Column | Type | Nullable | PK | FK | Domain |
+|--------|------|----------|----|----|--------|
+| dose_era_id | BIGINT | N | Y | | |
+| person_id | BIGINT | N | N | person.person_id | |
+| drug_concept_id | INT | N | N | concept.concept_id | Drug |
+| unit_concept_id | INT | N | N | concept.concept_id | Unit |
+| dose_value | FLOAT | N | N | | |
+| dose_era_start_date | DATE | N | N | | |
+| dose_era_end_date | DATE | N | N | | |
