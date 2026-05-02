@@ -5,18 +5,21 @@ license: MIT
 compatibility: Designed for Databricks Genie Code Agent mode launched from a notebook with a Python-capable cluster (serverless or classic). Genie Code launched from the catalog browser, a Genie Space, or the SQL editor is backed by a SQL warehouse and CANNOT run this skill's Step 6 Pydantic validator — see "Compute requirements" below. Requires databricks-sdk, pyyaml, pydantic. Run pipeline triggering uses Pipelines Editor native run when available, scripts/run_pipeline.py from notebooks.
 metadata:
   author: Samuel Selvan (Databricks SA)
-  version: "1.6"
+  version: "2.0"
   built_for_session: "2026-04-29 OMOP transform framework hands-on"
   v1_1_notes: "Vendor-neutralized; standalone YAML validator (no host-repo cd); workspace-scope deploy; canonical example flipped to fact-table shape."
   v1_2_notes: "STCM guidance reframed: source_to_concept_map UC table is the runtime source of truth; CSV seed at seed_data/source_to_concept_map_custom.csv is one of two write paths (alongside direct SQL/MERGE), not the only path. Added 'Adding source_to_concept_map mappings' section."
   v1_3_notes: "Compute requirements made explicit: skill requires a Python-capable notebook kernel; catalog browser / Genie Space / SQL editor surfaces (SQL warehouse compute) cannot run the Pydantic validator. Added 'Compute requirements' section. MANDATORY rule 2 now short-circuits with a verbatim user message instead of retrying when Python is unavailable."
   v1_4_notes: "Path A canonical example switched from INSERT to MERGE INTO with composite key (source_code, source_vocabulary_id) — matches src/01_load_vocabulary.py's verb so framework is internally consistent on STCM writes; idempotent on re-runs. INSERT demoted to 'first-bootstrap-only' aside."
   v1_6_notes: "Step 0 added for first-time project scaffolding via scripts/scaffold_omop_project.py (existing Step 0 'Discover source schema' content preserved as Step 1 subsection). Step 7 body tightened to inline scaffold-aware vs hand-authored DAG-wiring guidance with mandatory rules (full_refresh, depends_on, validate-before-deploy)."
+  v2_0_notes: "State-aware skill: bundle_state.py reads project state, classify_request branches Update / Replace / Different-table sub-paths, classify_batch reorders multi-table requests by OMOP DAG. Steps renumbered 1-8 with Step 4 (Update workflow, retry-with-fix-forward) and Step 5 (Generate workflow) as peer sub-paths. config_writer.py ships atomic writes with optional mtime-based optimistic concurrency; structural_changelog.py produces field-level Pydantic-schema-aware diffs. Validation-prominence template fires on materialization_diff after a successful pipeline run (Decision 14: prominent offer, respected decline, named trade-off, no enforcement). references/recommended_ci_config.md ships GitHub Actions and Azure DevOps Pipelines snippets for wiring Pydantic + databricks bundle validate into CI. .omop-skill-version marker file gates state-aware behavior. See MIGRATION-v1.6-to-v2.0.md for the v1.6→v2.0 crosswalk."
 ---
 
 # OMOP Pipeline Builder
 
 Skill for authoring YAML-driven SDP (Spark Declarative Pipelines) transforms from EHR source bronze tables into OMOP CDM v5.4 tables in Unity Catalog, validating silver output, and triggering pipeline updates. Works with the shared config schema (`configs/_schema.yaml`) and the `source_to_concept_map` reference table in UC, which can be populated by direct SQL/MERGE or by the git-tracked bootstrap seed CSV at `seed_data/source_to_concept_map_custom.csv` (see [Adding source_to_concept_map mappings](#adding-source_to_concept_map-mappings)).
+
+**v2.0 framing.** This skill maintains a living, governed bundle in a UC Volume. Each invocation is a delta against the current state — generation, update, or replacement, with reviewer ratification at each step. The agent re-reads bundle state before every per-table flow, so it knows whether a config already exists, whether the table is already materialized in `core_target`, and whether the project has been scaffolded with the `.omop-skill-version` marker. See [`MIGRATION-v1.6-to-v2.0.md`](../../../MIGRATION-v1.6-to-v2.0.md) (at the repo root) for what changed for v1.6 customers.
 
 ## Compute requirements (read before launching)
 
@@ -76,6 +79,8 @@ Pair with the **snake-case-column-renamer** skill when bronze still uses PascalC
 Skip this step if your team already has an OMOP build repo. This step is for
 the first time someone on your team is starting an OMOP CDM v5.4 build with
 this skill.
+
+> **State-aware skill.** Starting in v2.0, the skill re-reads bundle state at the start of every per-table flow (Step 2 onward). It checks for the `.omop-skill-version` marker, the existing `configs/<table>.yaml` files, and the materialized state of `core_target` in Unity Catalog. State drives branching — Update, Replace, and Generate are explicit sub-paths instead of silent regenerations. Scaffolding is the one-time setup that makes state-awareness safe; skip ahead to [Step 2](#step-2--confirm-target--check-existing-state) only if you have already scaffolded or you are running against an existing v1.6 project (the scaffolder will write the marker on demand without rebuilding the project tree — see [`MIGRATION-v1.6-to-v2.0.md`](../../../MIGRATION-v1.6-to-v2.0.md)).
 
 The scaffolder generates a working DAB-shaped project: bundle config, jobs DAG
 with all 14 OMOP tables as commented placeholders, src/ boilerplate, empty
@@ -863,6 +868,10 @@ If any fixtures fail after your change, the change broke the skill's contract. F
 - [`references/omop_dag_dependencies.md`](references/omop_dag_dependencies.md) — Round 1–4 dependency chart for `resources/jobs.yml`
 - [`references/recommended_ci_config.md`](references/recommended_ci_config.md) — GitHub Actions and Azure DevOps Pipelines snippets for wiring Pydantic schema validation + `databricks bundle validate` into CI
 - [`templates/discovery.yaml`](templates/discovery.yaml) — file-shape reference for the optional `discovery.yaml` artifact (NOT a setup precondition)
+- [`scripts/bundle_state.py`](scripts/bundle_state.py) — read-only project state introspection (config inventory, materialized-table probe, conflict classification); used by the agent runtime, also exposes a debug CLI
+- [`scripts/_omop_dag.py`](scripts/_omop_dag.py) — structured OMOP CDM v5.4 DAG dependencies (Round 1–4); data module consumed by `bundle_state.py` for predecessor analysis and by Step 8 wiring
+- [`scripts/config_writer.py`](scripts/config_writer.py) — atomic YAML config writer with optional mtime-based optimistic concurrency (`MtimeMismatchError`) and read-only Git status surfacing
+- [`scripts/structural_changelog.py`](scripts/structural_changelog.py) — Pydantic-schema-aware field-level diff between two OMOP YAML configs (`FieldChange` records, no `deepdiff` dependency)
 - [`scripts/generate_config.py`](scripts/generate_config.py) — bronze `DESCRIBE` → pure pass-through YAML stub
 - [`scripts/generate_source_mappings.py`](scripts/generate_source_mappings.py) — distinct codes → CSV in OHDSI `source_to_concept_map` shape (input for either bootstrap-CSV or direct-SQL paths; see [Adding source_to_concept_map mappings](#adding-source_to_concept_map-mappings))
 - [`scripts/validate_yaml_schema.py`](scripts/validate_yaml_schema.py) — standalone Pydantic config validator (CLI + `validate(path)`)
