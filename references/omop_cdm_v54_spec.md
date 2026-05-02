@@ -92,7 +92,7 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | procedure_end_date | DATE | Y | N | | |
 | procedure_end_datetime | TIMESTAMP | Y | N | | |
 | procedure_type_concept_id | INT | N | N | concept.concept_id | Type Concept |
-| modifier_concept_id | INT | Y | N | concept.concept_id | Procedure |
+| modifier_concept_id | INT | Y | N | concept.concept_id | |
 | quantity | INT | Y | N | | |
 | provider_id | BIGINT | Y | N | | |
 | visit_occurrence_id | BIGINT | Y | N | | |
@@ -162,14 +162,14 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 |--------|------|----------|----|----|--------|
 | observation_id | BIGINT | N | Y | | |
 | person_id | BIGINT | N | N | person.person_id | |
-| observation_concept_id | INT | N | N | concept.concept_id | Observation |
+| observation_concept_id | INT | N | N | concept.concept_id | |
 | observation_date | DATE | N | N | | |
 | observation_datetime | TIMESTAMP | Y | N | | |
 | observation_type_concept_id | INT | N | N | concept.concept_id | Type Concept |
 | value_as_number | FLOAT | Y | N | | |
 | value_as_string | STRING | Y | N | | |
-| value_as_concept_id | INT | Y | N | concept.concept_id | Observation |
-| qualifier_concept_id | INT | Y | N | concept.concept_id | Observation |
+| value_as_concept_id | INT | Y | N | concept.concept_id | |
+| qualifier_concept_id | INT | Y | N | concept.concept_id | |
 | unit_concept_id | INT | Y | N | concept.concept_id | Unit |
 | provider_id | BIGINT | Y | N | | |
 | visit_occurrence_id | BIGINT | Y | N | | |
@@ -188,10 +188,10 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | person_id | BIGINT | N | Y | person.person_id | |
 | death_date | DATE | N | N | | |
 | death_datetime | TIMESTAMP | Y | N | | |
-| death_type_concept_id | INT | N | N | concept.concept_id | Type Concept |
-| cause_concept_id | INT | Y | N | concept.concept_id | Condition |
+| death_type_concept_id | INT | Y | N | concept.concept_id | Type Concept |
+| cause_concept_id | INT | Y | N | concept.concept_id | |
 | cause_source_value | STRING | Y | N | | |
-| cause_source_concept_id | INT | Y | N | concept.concept_id | Condition |
+| cause_source_concept_id | INT | Y | N | concept.concept_id | |
 
 ## location
 
@@ -214,7 +214,7 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 |--------|------|----------|----|----|--------|
 | care_site_id | BIGINT | N | Y | | |
 | care_site_name | STRING | Y | N | | |
-| place_of_service_concept_id | INT | Y | N | concept.concept_id | Place of Service |
+| place_of_service_concept_id | INT | Y | N | concept.concept_id | Visit |
 | location_id | BIGINT | Y | N | | |
 | care_site_source_value | STRING | Y | N | | |
 | place_of_service_source_value | STRING | Y | N | | |
@@ -227,13 +227,13 @@ Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. 
 | provider_name | STRING | Y | N | | |
 | npi | STRING | Y | N | | |
 | dea | STRING | Y | N | | |
-| specialty_concept_id | INT | Y | N | concept.concept_id | Provider Specialty |
+| specialty_concept_id | INT | Y | N | concept.concept_id | Provider |
 | care_site_id | BIGINT | Y | N | | |
 | year_of_birth | INT | Y | N | | |
 | gender_concept_id | INT | Y | N | concept.concept_id | Gender |
 | provider_source_value | STRING | Y | N | | |
 | specialty_source_value | STRING | Y | N | | |
-| specialty_source_concept_id | INT | Y | N | concept.concept_id | Provider Specialty |
+| specialty_source_concept_id | INT | Y | N | concept.concept_id | |
 | gender_source_value | STRING | Y | N | | |
 | gender_source_concept_id | INT | Y | N | concept.concept_id | Gender |
 
