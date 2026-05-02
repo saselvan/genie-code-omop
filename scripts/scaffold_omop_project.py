@@ -6,7 +6,7 @@ all 14 OMOP tables as commented placeholders, src/ boilerplate copied from this
 skill's reference implementation, empty configs/ folder, seed_data template, and
 a quickstart README.
 
-Called from Step 0 of the omop-pipeline-builder workflow. The agent collects
+Called from Step 1 of the omop-pipeline-builder workflow. The agent collects
 parameters conversationally and invokes scaffold_project() directly; this module
 also exposes a thin argparse CLI for engineer-driven re-scaffolds.
 
@@ -30,7 +30,6 @@ import logging
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 from databricks.sdk import WorkspaceClient
 
@@ -42,12 +41,12 @@ TEMPLATES_DIR = (
     Path(__file__).resolve().parent.parent / "templates" / "project_scaffold"
 )
 
-# Skill version stamped into the .omop-skill-version marker on every fresh
-# scaffold and on v1.6 -> v2.x upgrade. Read by Phase 1's bundle_state to
-# answer "is this a v2-aware OMOP project?" deterministically (rather than
-# heuristically parsing databricks.yml).
-_CURRENT_SKILL_VERSION = "2.0"
-_MARKER_FILENAME = ".omop-skill-version"
+# Skill version stamped into a `.omop-skill-version` marker file at scaffold
+# time. Informational only — bundle_state reads it as a forward-looking
+# breadcrumb when classifying requests, but no scaffolder behavior branches
+# on it. The marker is the cheapest reliable answer to "what skill version
+# wrote this project tree?" for support and audit.
+_CURRENT_SKILL_VERSION = "2.0.1"
 
 
 class VolumeNotFoundError(Exception):
@@ -72,17 +71,7 @@ class VolumeNotFoundError(Exception):
 
 @dataclass
 class ScaffoldResult:
-    """What the scaffolder reports back to the agent.
-
-    `marker_action` reports which path scaffold_project took:
-        - "fresh"   : new scaffold; full template tree + marker written.
-        - "upgrade" : existing v1.x project (databricks.yml present, marker
-                      missing or stale); only the marker was written, no
-                      template files touched.
-        - "noop"    : reserved for a future check-only mode that returns
-                      detection results without writing. Not currently
-                      emitted by scaffold_project.
-    """
+    """What the scaffolder reports back to the agent."""
 
     project_path: str
     volume_target: str
@@ -90,7 +79,6 @@ class ScaffoldResult:
     existing_tables: list[str]
     detection_skipped_reason: str | None
     files_written: int
-    marker_action: Literal["fresh", "upgrade", "noop"] = "fresh"
 
 
 def _default_core_target(volume_target: str) -> str:
@@ -315,54 +303,20 @@ def scaffold_project(
 
     Raises:
         VolumeNotFoundError: if volume_target Volume doesn't exist or isn't
-            accessible (fresh-scaffold path only). Agent catches and asks
-            customer to create.
-        ValueError: if project_path is already a v2.x OMOP project (both
-            databricks.yml and `.omop-skill-version` matching the current
-            skill version present), or if volume_target / core_target are
-            malformed.
+            accessible. Agent catches and asks customer to create.
+        ValueError: if project_path already contains a databricks.yml
+            (refuse to scaffold over any existing project — start over with
+            a fresh path), or if volume_target / core_target are malformed.
     """
     target = Path(project_path)
-    has_dbx = (target / "databricks.yml").exists()
-    marker_path = target / _MARKER_FILENAME
-    has_marker = marker_path.exists()
-    marker_is_current = (
-        has_marker
-        and marker_path.read_text(encoding="utf-8").strip() == _CURRENT_SKILL_VERSION
-    )
-
-    # Already-v2.x guard: refuse re-scaffold over a current-version project.
-    if has_dbx and marker_is_current:
+    if (target / "databricks.yml").exists():
         raise ValueError(
-            f"{project_path} is already a v{_CURRENT_SKILL_VERSION} OMOP "
-            f"project (databricks.yml + {_MARKER_FILENAME}={_CURRENT_SKILL_VERSION}). "
-            "Refusing to re-scaffold. To start over, delete the project tree "
-            "contents and re-run, or pick a fresh project_path."
+            f"{project_path} already contains a databricks.yml. "
+            "Refusing to scaffold over an existing project. To start over, "
+            "delete the project tree contents and re-run, or pick a fresh "
+            "project_path."
         )
 
-    # v1.6 (or stale-marker) upgrade path: stamp the marker only, leave every
-    # other file untouched. Cheap parse-validation on inputs; no SDK calls
-    # (existing project's UC is the customer's to manage; we don't re-verify).
-    if has_dbx and not marker_is_current:
-        if core_target is None:
-            core_target = _default_core_target(volume_target)
-        _validate_core_target(core_target)
-        marker_path.write_text(
-            f"{_CURRENT_SKILL_VERSION}\n", encoding="utf-8"
-        )
-        return ScaffoldResult(
-            project_path=str(target.resolve()),
-            volume_target=volume_target,
-            core_target=core_target,
-            existing_tables=[],
-            detection_skipped_reason=(
-                "Upgrade path: marker-only write; existing tables not probed."
-            ),
-            files_written=1,
-            marker_action="upgrade",
-        )
-
-    # Fresh-scaffold path.
     core_target = core_target or _default_core_target(volume_target)
     _validate_core_target(core_target)
 
@@ -390,6 +344,7 @@ def scaffold_project(
         detection_skipped_reason=skip_reason,
     )
 
+    marker_path = target / ".omop-skill-version"
     marker_path.write_text(f"{_CURRENT_SKILL_VERSION}\n", encoding="utf-8")
     files_written += 1
 
@@ -400,7 +355,6 @@ def scaffold_project(
         existing_tables=existing,
         detection_skipped_reason=skip_reason,
         files_written=files_written,
-        marker_action="fresh",
     )
 
 
@@ -447,7 +401,8 @@ def _copy_template_tree(src: Path, dst: Path) -> int:
     if not src.exists():
         raise FileNotFoundError(
             f"Templates directory not found: {src}. "
-            "Run Phase 1 of the v1.6 build first."
+            "The skill package is missing its bundled templates tree; reinstall "
+            "via `databricks workspace import-dir --overwrite ...`."
         )
     dst.mkdir(parents=True, exist_ok=True)
     count = 0
@@ -565,12 +520,6 @@ def _cli() -> None:
     except ValueError as e:
         print(f"ERROR: {e}")
         raise SystemExit(1)
-
-    if result.marker_action == "upgrade":
-        print(f"Detected v1.x project at: {result.project_path}")
-        print(f"  Wrote {_MARKER_FILENAME}: {_CURRENT_SKILL_VERSION}")
-        print("  No other files modified.")
-        return
 
     print(f"Scaffolded project at: {result.project_path}")
     print(f"  volume_target: {result.volume_target}")
