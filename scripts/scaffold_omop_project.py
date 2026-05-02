@@ -98,9 +98,19 @@ def _default_bronze_target(volume_target: str) -> str:
     Unlike `_default_core_target`, there is no safe inferable bronze schema —
     bronze schemas come from the customer's EHR landing zone (Caboodle,
     Clarity, Lakeflow Connect, etc.) and the scaffolder cannot guess it.
-    The `<CHANGEME>` pattern mirrors `notification_email` and `workspace.host`:
-    syntactically valid YAML, but obvious to the reader that the value must be
-    replaced before the pipeline can resolve a bronze table.
+
+    Failure mode if the customer ships the placeholder unchanged:
+        - `databricks bundle validate -t production` returns "Validation OK!"
+          (DAB validate checks structure, not variable values).
+        - The pipeline run fails when `${bronze_schema}` substitutes into a
+          source identifier like `cat.<CHANGEME — your bronze schema>.patient`,
+          which is invalid SQL. The runtime error contains the literal
+          `<CHANGEME>` string, making the cause obvious.
+
+    The placeholder is therefore loud at pipeline-time, but quiet at
+    validate-time. Customers should override before deploying — either by
+    passing `bronze_target` to the scaffolder or by editing
+    `databricks.yml`'s `bronze_schema.default` post-scaffold.
     """
     parts = volume_target.split(".")
     if len(parts) < 1 or not parts[0]:
@@ -290,11 +300,15 @@ def _render_readme(
     )
     bronze_schema = bronze_target.split(".")[1]
     bronze_changeme_block = (
-        f"\n> **`<CHANGEME>` placeholder.** `bronze_target` defaulted to "
-        f"`{bronze_target}`. Replace `<CHANGEME — your bronze schema>` in "
-        "`databricks.yml`'s `bronze_schema.default` with the actual schema "
-        "where your EHR landing-zone tables live (e.g. `bronze_caboodle`, "
-        "`bronze_clarity`, `bronze_lakeflow`) before running the pipeline.\n"
+        f"\n> **`<CHANGEME>` placeholder — override before deploying.** "
+        f"`bronze_target` defaulted to `{bronze_target}`. Replace "
+        "`<CHANGEME — your bronze schema>` in `databricks.yml`'s "
+        "`bronze_schema.default` with the actual schema where your EHR "
+        "landing-zone tables live (e.g., `bronze_caboodle`, `bronze_clarity`, "
+        "`bronze_lakeflow`). **`databricks bundle validate` will NOT catch "
+        "this** — it checks YAML structure, not variable values. The "
+        "pipeline run will fail with the literal `<CHANGEME>` string in the "
+        "error message.\n"
         if "<CHANGEME" in bronze_schema
         else ""
     )

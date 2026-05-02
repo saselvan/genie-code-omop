@@ -109,10 +109,16 @@ confirm all of them before writing files:
    `cat.bronze_clarity`, `cat.bronze_lakeflow`). **There is no safe default**
    — bronze schemas come from your EHR ingest layer and the scaffolder
    cannot guess. If you don't pass one, the scaffolder fills in a
-   `<CHANGEME — your bronze schema>` placeholder; the customer must edit
-   `databricks.yml` to replace it before the pipeline can read a bronze
-   table. Pass the actual value at scaffold time so the placeholder never
-   ships.
+   `<CHANGEME — your bronze schema>` placeholder.
+   The placeholder is **loud at pipeline-time, quiet at validate-time:**
+   `databricks bundle validate -t production` returns `Validation OK!` with
+   the placeholder unreplaced (DAB validate checks structure, not variable
+   values), but the pipeline run fails the moment `${bronze_schema}`
+   substitutes into a source identifier — the runtime error contains the
+   literal `<CHANGEME>` string. **Override the placeholder before
+   deploying.** Either pass `bronze_target` at scaffold time so it never
+   ships, or edit `databricks.yml`'s `bronze_schema.default` post-scaffold
+   before `databricks bundle deploy`.
 
 4. **`core_target`** — two-part UC name where OMOP tables live or will
    materialize: `<catalog>.<schema>`. Defaults to same catalog as
