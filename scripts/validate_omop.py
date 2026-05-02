@@ -138,7 +138,7 @@ def main() -> None:
     parser.add_argument(
         "--schema",
         default=None,
-        help="Silver schema (default: second segment of --table FQN)",
+        help="OMOP core schema (default: second segment of --table FQN)",
     )
     parser.add_argument("--ref-schema", default="reference", help="Reference vocab schema")
     parser.add_argument(

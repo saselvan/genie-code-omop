@@ -68,7 +68,7 @@ Pair with the **snake-case-column-renamer** skill when bronze still uses PascalC
 ## What this skill does
 
 1. Documents the end-to-end workflow from bronze inspection through YAML editing, validation, and pipeline run.
-2. Provides `scripts/generate_config.py` to `DESCRIBE` a bronze table via SQL and emit a stub YAML (sources, joins, `column_mappings`, TODO blocks for `vocabulary_lookups` and `expectations`).
+2. Generates each table's YAML config in conversation: the agent issues `SHOW SCHEMAS` / `SHOW TABLES` / `DESCRIBE TABLE` itself against UC, drafts the YAML in working memory against `configs/_schema.yaml` and `configs/person.yaml`, validates via `scripts/validate_yaml_schema.py`, and writes atomically via `scripts/config_writer.py`.
 3. Provides `scripts/generate_source_mappings.py` to resolve distinct source codes against `{catalog}.{ref_schema}.concept` and emit an OHDSI-shaped CSV that can be merged into the `source_to_concept_map` UC table (the runtime source of truth — see [Adding source_to_concept_map mappings](#adding-source_to_concept_map-mappings)).
 4. Provides `scripts/validate_omop.py` to run five validation layers against a target table.
 5. Provides `scripts/run_pipeline.py` to call `WorkspaceClient.pipelines.start_update` with optional `table_name` parameters and poll to completion.
@@ -471,46 +471,32 @@ concurrency guard — Replace's intent is to discard the existing
 state, so a concurrent edit racing with us is moot). The "Different
 table" sub-path re-enters Step 2 with the new target.
 
-### Step 5 — Generate config via `scripts/generate_config.py`
+### Step 5 — Generate config in conversation
 
-**Before generating, read `configs/_schema.yaml` for the required YAML structure, then read `configs/person.yaml` as a working example of overall file shape.** All generated configs MUST follow the same structural shape — especially `vocabulary_lookups` (requires `resolution`, `source_alias`, `fallback`) and `expectations` (requires `{name, expr}` objects). For **fact tables** (`condition_occurrence`, `procedure_occurrence`, `drug_exposure`), the structural rules — two-lookup pattern, `domain_id` on both lookups, hash-with-resolved-concept-id surrogate keys — are demonstrated by the [Canonical YAML example](#canonical-yaml-example) below. `configs/person.yaml` is the file-shape template; the inline canonical is the fact-table-rules template. They are not competing canonical poles.
+The agent generates the YAML config directly in the conversation. There is no CLI generator to invoke — config generation is the agent's job, end to end. The flow is the **Generate** sub-path of the same write contract that powers the Update sub-path documented in [Step 4 — Update workflow](#step-4--update-workflow); the only difference is `overwrite=False, expected_mtime=None` for greenfield writes (see sub-step 5, "Write atomically," below).
 
-The generator supports two invocation modes. Use **explicit mode** by default — it requires no setup and is what cold-start sessions use. Use **lookup mode** as an opportunistic fast path if an up-to-date `discovery.yaml` already exists from a prior session (and remember: always verify against UC before trusting it).
+**1. Discover the bronze surface.** Issue `SHOW SCHEMAS IN <catalog>` → `SHOW TABLES IN <catalog>.<bronze_schema>` → `DESCRIBE TABLE EXTENDED <catalog>.<bronze_schema>.<table>` against the customer's workspace via the SDK statement-execution API (the same mechanism `scripts/validate_omop.py` and `scripts/generate_source_mappings.py` use). Confirm the bronze FQN, column names and types, and any obvious primary-key / timestamp columns before drafting.
 
-**Explicit mode (default — no setup file required):**
+**2. Read the canonical schema and exemplar.** Load `configs/_schema.yaml` (the Pydantic schema source) and `configs/person.yaml` (the worked example) into working memory. The schema defines what fields the YAML must have and which are required. The exemplar shows the expected shape of `column_mappings`, `joins`, `vocabulary_lookups`, and `expectations`. For **fact tables** (`condition_occurrence`, `procedure_occurrence`, `drug_exposure`), the structural rules — two-lookup pattern, `domain_id` on both lookups, hash-with-resolved-concept-id surrogate keys — are demonstrated by the [Canonical YAML example](#canonical-yaml-example) below. `configs/person.yaml` is the file-shape template; the inline canonical is the fact-table-rules template. They are not competing canonical poles.
 
-```bash
-python scripts/generate_config.py \
-  --bronze-table <your_catalog>.<your_bronze_schema>.<your_patient_table> \
-  --omop-table person \
-  --catalog <your_catalog> \
-  --bronze-schema <your_bronze_schema> \
-  --output ./configs/person.yaml
-```
+**3. Draft the YAML in working memory — do not pass-through.** Pass-through means emitting `{target: snake_case(col), expr: "src.<Col>"}` for every bronze column without reasoning about whether each column actually maps to its OMOP target. The agent must instead reason about each mapping per [Step 6 — Review, edit, and validate YAML](#step-6--review-edit-and-validate-yaml)'s decision tree (cast type only / lookup vocabulary / join domain table / split or extract / leave NULL). Use `{catalog}` and `{bronze_schema}` placeholders in `sources[].table` — never hardcoded catalog or schema names; the pipeline's `config_loader.py` substitutes them at runtime from Spark conf.
 
-**Lookup mode (fast path — only if `discovery.yaml` exists and is fresh):**
+**4. Validate before writing.** Call `validate_yaml_schema.validate_text(yaml_string, target_table=<table>)`. If validation fails, fix the YAML in working memory and re-validate. Do not write a file that fails Pydantic. The validate-then-fix-forward loop is bounded at N=3 attempts, identical to the Update sub-path's loop in [Step 4 — Update workflow](#step-4--update-workflow); on the 4th failure, surface the validation errors and stop.
 
-```bash
-python scripts/generate_config.py \
-  --discovery-file /Workspace/Users/<your_user>/discovery.yaml \
-  --omop-table person \
-  --output ./configs/person.yaml
-```
+**5. Write atomically.** Call `config_writer.write_config(project_path, target_table, yaml_string, overwrite=False, expected_mtime=None)`. Generate is the greenfield sub-path: `overwrite=False` raises `FileExistsError` if a `configs/<target_table>.yaml` already exists. If it does, the right move is the [Step 4 — Update workflow](#step-4--update-workflow) sub-path (which passes `overwrite=True` plus a captured `expected_mtime` for the concurrency guard), not blind overwrite. `expected_mtime=None` skips the concurrency guard because there is no prior version to guard against.
 
-`--catalog`, `--bronze-schema`, and the bronze table FQN are resolved from `discovery.yaml` by `--omop-table`. The agent should still confirm the resolved values against `SHOW SCHEMAS` / `SHOW TABLES` before invoking — a stale `discovery.yaml` will silently send the script at the wrong table.
-
-Requirements: `databricks-sdk`, `pyyaml`. SQL warehouse ID auto-discovers (first running serverless warehouse) — override with `--warehouse-id` or `DATABRICKS_WAREHOUSE_ID`. The script writes a pure pass-through YAML stub matching the shared config schema (see `configs/_schema.yaml`): one `column_mappings` entry per bronze column with `target: snake_case(col), expr: "src.<Col>"`. The agent then rewrites most of `column_mappings` based on the OMOP target columns, the resolution decision tree (MANDATORY rule 3), and the canonical `condition_occurrence` example below. The generator is honest about not knowing your domain semantics — it doesn't pretend.
+**6. Surface the result.** Print `WriteResult.path` (where the file landed), the `git_warning` if any (Decision-10 honest text when the project is not under git), and a one-line summary of mappings the engineer needs to review (any not pure cast-only — vocabulary lookups, joins, CASE expressions, hash surrogate keys). The customer sees what was written and where review attention belongs.
 
 ### Step 6 — Review, edit, and validate YAML
 
-Starting from the pure pass-through scaffold emitted by `scripts/generate_config.py`, rewrite or fill in:
+Starting from the YAML the agent drafted in [Step 5 — Generate config in conversation](#step-5--generate-config-in-conversation), review and refine:
 
-- `joins` when multiple `sources` are listed (the scaffold emits a single `src` source — replace with the right alias and add joins as needed)
-- `vocabulary_lookups` — the scaffold emits an empty list. If a lookup uses `resolution: source_to_concept_map`, also plan how the required rows will land in the UC `source_to_concept_map` table — see [Adding source_to_concept_map mappings](#adding-source_to_concept_map-mappings).
-- `expectations` (`fail` / `drop` / `warn`) appropriate to the table — the scaffold emits empty fail/drop/warn lists
-- `column_mappings` — the scaffold emits one pass-through entry per bronze column (`target: snake_case(col), expr: src.<Col>`); rewrite each entry to the correct OMOP target column, drop columns that don't belong, add CASE expressions or vocabulary-resolved references as needed
+- `joins` when multiple `sources` are listed (a single-source draft uses one `src` alias — add the right aliases and join clauses as additional sources are introduced)
+- `vocabulary_lookups` — every lookup needs `resolution`, `source_alias`, `domain_id`, and `fallback`. If a lookup uses `resolution: source_to_concept_map`, also plan how the required rows will land in the UC `source_to_concept_map` table — see [Adding source_to_concept_map mappings](#adding-source_to_concept_map-mappings).
+- `expectations` (`fail` / `drop` / `warn`) appropriate to the table — at minimum, `fail` on primary-key NOT NULL, `drop` on invalid concept resolutions, `warn` on unmapped vocabularies
+- `column_mappings` — verify each entry maps a bronze column to the correct OMOP target column with the right cast or vocabulary resolution. Drop columns that don't belong, add CASE expressions or vocabulary-resolved references as needed.
 
-Replace any hardcoded catalog/schema names with `{catalog}` and `{bronze_schema}` placeholders in `sources[].table`. The pipeline's `config_loader.py` substitutes these at runtime from Spark conf. See `configs/person.yaml` for the pattern.
+Confirm `sources[].table` uses `{catalog}` and `{bronze_schema}` placeholders (never hardcoded catalog or schema names). The pipeline's `config_loader.py` substitutes these at runtime from Spark conf. See `configs/person.yaml` for the pattern.
 
 **BEFORE presenting the config to the user, validate it against the Pydantic schema using `scripts/validate_yaml_schema.py` — the standalone validator that ships with this skill (no host-repo `cd` required):**
 
@@ -810,7 +796,6 @@ The canonical example above documents the structural rules for `concept_table_ma
 - **`relationship_id` overrides for measurement.** Default "Maps to" works for condition/procedure/drug. For measurement, also consider `relationship_id: "Maps to unit"` (resolves LOINC → UCUM unit) and `relationship_id: "Maps to value"` (resolves LOINC → categorical value concepts). See [`references/canonical_examples.md`](references/canonical_examples.md) for the measurement pattern.
 - **`visit_type_concept_id` is not visit kind.** In OMOP it records **provenance** (how the visit row was captured). For encounter rows from an EHR, use concept **32817** ("EHR"). Clinical visit type belongs in `visit_concept_id`.
 - **Vocabulary lookups for non-trivial codes:** codes that do not exist as `concept_code` in the right `vocabulary_id` need `source_to_concept_map`, cross-vocabulary relationships, or manual OHDSI workflow — not a bare string match on `concept` alone.
-- **`generate_config.py` is a pass-through scaffolder.** It emits `{target: snake_case(col), expr: "src.<Col>"}` for every bronze column. The agent rewrites column_mappings, joins, vocabulary_lookups, and expectations using the canonical example and resolution decision tree. The script does not guess domain semantics.
 - **`validate_omop.py` domain checks** cover common `*_concept_id` columns listed in the reference spec; exotic columns may need extending the spec or script.
 - **CPT4** is often missing until Athena CPT4 license steps complete; validation against procedure concepts may show gaps until vocab is complete.
 - **SQL warehouse cost.** Large `DISTINCT` scans in `generate_source_mappings.py` can be expensive on wide bronze tables — filter early if needed. The standalone schema validator (`scripts/validate_yaml_schema.py`) does NOT need a warehouse — it's pure Pydantic, fast, runs anywhere.
@@ -914,7 +899,6 @@ If any fixtures fail after your change, the change broke the skill's contract. F
 - [`scripts/_omop_dag.py`](scripts/_omop_dag.py) — structured OMOP CDM v5.4 DAG dependencies (Round 1–4); data module consumed by `bundle_state.py` for predecessor analysis and by Step 8 wiring
 - [`scripts/config_writer.py`](scripts/config_writer.py) — atomic YAML config writer with optional mtime-based optimistic concurrency (`MtimeMismatchError`) and read-only Git status surfacing
 - [`scripts/structural_changelog.py`](scripts/structural_changelog.py) — Pydantic-schema-aware field-level diff between two OMOP YAML configs (`FieldChange` records, no `deepdiff` dependency)
-- [`scripts/generate_config.py`](scripts/generate_config.py) — bronze `DESCRIBE` → pure pass-through YAML stub
 - [`scripts/generate_source_mappings.py`](scripts/generate_source_mappings.py) — distinct codes → CSV in OHDSI `source_to_concept_map` shape (input for either bootstrap-CSV or direct-SQL paths; see [Adding source_to_concept_map mappings](#adding-source_to_concept_map-mappings))
 - [`scripts/validate_yaml_schema.py`](scripts/validate_yaml_schema.py) — standalone Pydantic config validator (CLI + `validate(path)`)
 - [`scripts/validate_omop.py`](scripts/validate_omop.py) — five-layer UC table validation
