@@ -21,14 +21,14 @@ Two validators belong in CI for OMOP builds. Both are **fast** and
    malformed YAML, missing required fields, invalid resolution
    strategies, cross-field violations (e.g., a vocabulary lookup
    declares `resolution: concept_table` but omits `domain_id`). Runs
-   the scaffolded `tests/test_config_schema.py`. Fast: ≪5 seconds
-   per run.
+   the scaffolded `tests/test_config_schema.py`. Fast: typically
+   under 5 seconds per run.
 
 2. **Databricks Asset Bundle validation.** Runs
    `databricks bundle validate -t <target>`. Catches missing
    pipeline references, malformed `depends_on` chains, schema
-   violations in `resources/*.yml`, missing variables. Fast: ≪10
-   seconds per run.
+   violations in `resources/*.yml`, missing variables. Fast:
+   typically under 10 seconds per run.
 
 Two surfaces belong in **post-deploy** validation, NOT in CI:
 
@@ -151,7 +151,7 @@ jobs:
 
       - name: Pydantic schema validation
         # The scaffolded test_template_health smoke test always
-        # passes (see templates/tests/test_config_schema.py), so
+        # passes (see templates/project_scaffold/tests/test_config_schema.py), so
         # this step exits 0 even when configs/ is empty. As you
         # commit configs/<table>.yaml files, parametrize collection
         # picks them up automatically.
@@ -342,6 +342,26 @@ auto-auth pick up the rest. Use this pattern only if your team
 already manages Databricks service connections — otherwise the
 plain variable-group pattern above is simpler.
 
+**Verify the credential plumbing.** Service-connection contracts
+vary by Azure DevOps / Databricks integration version. Some
+connections export `DATABRICKS_TOKEN`, others export Azure-AD
+tokens that the Databricks CLI consumes via `azure-resource-id`
+auth, others require `az login` to be run inside the inline
+script before the CLI works. Before committing this snippet,
+verify the credential flow with a one-shot run:
+
+```bash
+# Inside the AzureCLI@2 inlineScript, before bundle validate:
+databricks auth env
+# Confirms which env vars the CLI sees and which auth method
+# it will use. Adjust the snippet (or the service connection)
+# until `databricks auth env` reports a complete auth profile.
+```
+
+Your team's Databricks-on-Azure runbook is the source of truth
+for which env vars the connection emits. Don't merge the snippet
+on assumption.
+
 ### Dev-only PAT alternative (NOT for production CI)
 
 For a personal sandbox or a lower-risk dev workspace, the same
@@ -414,7 +434,7 @@ have. Three patterns work for production:
    `python scripts/validate_omop.py --table <catalog>.<core_schema>.<table>`
    after each deploy. Common for early-stage builds and small
    teams. Findings reviewed by the engineer; reviewer ratifies
-   each. The agent's `SKILL.md` Step 7 documents this flow.
+   each. The skill's `SKILL.md` Step 7 documents this flow.
 
 2. **Workflow task.** Add a `python_wheel_task` (or notebook task)
    to your pipeline's downstream Workflow that runs `validate_omop`

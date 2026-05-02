@@ -606,7 +606,7 @@ If the engineer accepts, run `scripts/validate_omop.py` and surface findings usi
 
 If the engineer declines, acknowledge the decline once and continue to Step 8 (DAG wiring). Do not nag.
 
-**Trigger condition.** Throughout the session, whenever the skill calls `read_bundle_state`, it passes `previous_silver_tables` — the snapshot from the prior call in this session — so `materialization_diff` reflects what is newly materialized since the last view. When `materialization_diff` is non-empty for a table that was just generated in this session, the prominence template fires. Cross-session materializations — engineer ran the pipeline yesterday, opens a fresh chat today — do NOT fire prominence because there is no "previous" snapshot to diff against. The engineer can still request validation explicitly at any time; the prominence rule is purely about proactive offering on the materialization edge.
+**Trigger condition.** Whenever the skill calls `read_bundle_state` after the first call in a session, pass `previous_silver_tables` — the snapshot from the immediately prior call — so `materialization_diff` reflects what is newly materialized since the last view. **On the first call in a session, omit `previous_silver_tables` entirely** (let it default to `None`). `materialization_diff` is then `None`, and the prominence template does not fire — there is nothing to diff against yet. **Never pass `[]` as a stand-in for "no prior snapshot"**; an empty list is a real snapshot meaning "no silver tables existed before," which would make every currently-materialized table look newly materialized and would fire prominence on every table at once. When `materialization_diff` is non-empty and contains the just-generated target table, the prominence template fires for that table. Cross-session materializations — engineer ran the pipeline yesterday, opens a fresh chat today — do NOT fire prominence because the first call in the new session has no previous snapshot. The engineer can still request validation explicitly at any time; the prominence rule is purely about proactive offering on the materialization edge.
 
 **Pipeline rerun behavior.** If the engineer reruns the same pipeline (for example to fix data and re-materialize), the table will appear in `materialization_diff` again on the next state read, and the prominence template fires again. Re-validation on rerun is intended — the data changed.
 
@@ -616,7 +616,7 @@ The skill does **NOT**:
 
 - Auto-run validation. The offer is the gate; the engineer's acceptance is the trigger.
 - Block subsequent workflow on a declined validation. The skill ships the validator and the offer; enforcement is your team's CI policy. See [`references/recommended_ci_config.md`](references/recommended_ci_config.md) for the documented CI integration patterns (GitHub Actions, Azure DevOps Pipelines).
-- Repeat the offer for the **same materialization** if the engineer has already declined. (A pipeline rerun produces a new materialization event and re-fires the offer — see "Pipeline rerun behavior" above. Decline is scoped to one materialization, not the whole session.)
+- Re-offer validation for the **same materialization** after the engineer has declined. (A pipeline rerun is a new materialization event and re-fires the offer — see "Pipeline rerun behavior" above. Decline is scoped to one materialization, not the whole session.)
 - Generate compliance documentation about the decline. The conversation log is the record.
 
 #### Validate via `scripts/validate_omop.py`
