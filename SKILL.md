@@ -289,6 +289,15 @@ via `os.stat(<config_path>).st_mtime`. The mtime is the optimistic
 concurrency token passed to `write_config` later. The text is one
 of the two inputs to the structural diff.
 
+> **Mtime precision contract.** Pass the captured `st_mtime` float
+> through to `write_config(..., expected_mtime=<float>)` **without
+> truncating**. The writer compares with a 1 microsecond tolerance —
+> if the agent's working memory ever serializes the value through a
+> coarser surface (millisecond JSON timestamp, ISO-8601 string with
+> truncated fractional seconds, etc.) and then reconstitutes it,
+> false `MtimeMismatchError` raises become possible. Keep the value
+> as a Python `float` end-to-end within a single Update flow.
+
 **Generate-and-validate loop (retry-with-fix-forward, N=3).** The
 agent regenerates the YAML in working memory, runs
 `validate_yaml_schema.validate_text(new_yaml)`, and:
@@ -358,7 +367,10 @@ overwrite=True, expected_mtime=<captured_mtime>)`. Three outcomes:
 
 > I couldn't compose a valid YAML for the change you requested after
 > 3 attempts. The original `configs/person.yaml` is unchanged on
-> disk. The validation errors I'm hitting:
+> disk. The validation errors I'm hitting (Pydantic uses dotted
+> error paths — these are the `loc` tuples from
+> `ValidationError.errors()`, NOT the bracket-notation paths the
+> structural changelog uses):
 >
 > - `vocabulary_lookups.0.source_vocabulary_id`: required when
 >   resolution=source_to_concept_map
@@ -380,14 +392,17 @@ overwrite=True, expected_mtime=<captured_mtime>)`. Three outcomes:
 > unchanged from my write attempt. Re-reading state and re-entering
 > Step 2 — please re-confirm the change you want to make.
 
-**Response template (non-Git'd project warning, append to success):**
+**Response template (non-Git'd project warning, append to success).**
+Surface `WriteResult.git_warning` verbatim. The text is the
+Decision-10 contract surface — do not paraphrase. The current verbatim
+text is:
 
-> ⓘ This project isn't under git version control. The skill does
-> not snapshot configs — without git or cloud-side storage
-> versioning, this overwrite is not recoverable. Recommended:
-> connect this project to git before further updates. Alternative:
-> ask your platform team to enable versioning on the storage
-> account backing this Volume.
+> ⓘ Project is not under git version control. The skill does not
+> snapshot configs — without git or cloud-side storage versioning,
+> this overwrite is not recoverable. Recommended: connect this
+> project to git before further updates. Alternative: ask your
+> platform team to enable versioning on the storage account backing
+> this Volume.
 
 The agent does NOT:
 

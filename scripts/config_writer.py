@@ -9,12 +9,13 @@ Update and Replace sub-paths; the Generate sub-path (greenfield) writes
 through this same surface with ``overwrite=False``.
 
 Decision 9: writes the WHOLE regenerated config — never a textual diff.
-Decision 10: VCS-agnostic. The writer never invokes git; the engineer
-commits through their own workflow. A non-Git'd project surfaces an
-informational ``git_warning`` in :class:`WriteResult` (added in Phase 3
-Step 3) but never blocks the write.
+Decision 10: VCS-agnostic. The writer issues only **read-only** git
+probes (``git rev-parse`` / ``git status``) for surfacing
+``WriteResult.git_warning``; it never mutates the repository state
+and never blocks the write on git results. The engineer commits
+through their own workflow.
 Decision 11: agent writes, engineer commits. The writer does not
-``git add`` or ``git commit``.
+``git add``, ``git commit``, or any other git mutation.
 
 This file ships the Step 1 + 2 + 3 + 4 surface:
   - greenfield write (file does not exist)

@@ -50,13 +50,6 @@ from validate_yaml_schema import OMOPConfig, validate_text
 # Phase 3 spec example: ``column_mappings[3].target``.
 _PATH_DOT = "."
 
-# Sentinel for "this side is missing a value." Distinct from
-# ``None`` because ``None`` is itself a valid YAML/Pydantic value
-# (Optional fields in the schema). Stored as a private singleton
-# rather than ``object()`` so the dataclass repr stays readable
-# in test failures.
-_MISSING = object()
-
 
 @dataclass
 class FieldChange:
@@ -112,13 +105,25 @@ def compute_structural_changelog(
             the agent is about to write).
 
     Returns:
-        Ordered list of :class:`FieldChange`. Order is stable:
-        depth-first traversal of the schema's natural field order
-        for shared sub-trees, with adds/removes interleaved by
-        sorted-key order within each dict. List elements are
-        compared positionally; an out-of-position list change
-        surfaces as either a ``modified`` (if positions overlap)
-        plus ``added`` / ``removed`` (if lengths differ).
+        Ordered list of :class:`FieldChange`. Order is stable and
+        deterministic but driven by **insertion order**, not sort
+        order:
+
+          - For shared sub-trees, traversal follows OLD's
+            ``model_dump()`` iteration order, which Pydantic emits
+            in schema field declaration order — matching the
+            engineer's reading order in the existing YAML.
+          - Keys present only in OLD emit ``removed`` interleaved
+            at the position they appear in OLD's iteration order.
+          - Keys present only in NEW (i.e., brand-new fields) are
+            appended as ``added`` at the END of each dict level,
+            in NEW's iteration order. This collects new fields at
+            the bottom of each level rather than scattering them
+            among the shared walk.
+
+        List elements are compared positionally; an out-of-position
+        list change surfaces as either a ``modified`` (if positions
+        overlap) plus ``added`` / ``removed`` (if lengths differ).
 
     Raises:
         ValueError: either YAML fails OMOPConfig validation. The
