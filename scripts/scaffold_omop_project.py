@@ -49,6 +49,19 @@ TEMPLATES_DIR = (
 # notebook in the customer's deployed src/.
 SHARED_VALIDATOR_PATH = Path(__file__).resolve().parent / "_omop_validator.py"
 
+# OMOP CDM v5.4 spec markdown copied into the customer's <target>/src/ alongside
+# the notebook and the shared validator module (see _copy_shared_spec).
+# Single-source-of-truth: the spec lives in references/ exactly once; v2.0.4c
+# Commit 2's notebook calls parse_omop_spec_md(spec_text), which requires the
+# spec markdown be reachable from the notebook at customer runtime. Mirror of
+# SHARED_VALIDATOR_PATH's pattern; helpers kept separate from
+# _copy_shared_module rather than generalized so each commit stays
+# single-purpose (v2.0.5 candidate to consider unification once a third
+# shared-file pattern emerges).
+SHARED_SPEC_PATH = (
+    Path(__file__).resolve().parent.parent / "references" / "omop_cdm_v54_spec.md"
+)
+
 # Skill version stamped into a `.omop-skill-version` marker file at scaffold
 # time. The marker has two orthogonal uses:
 #   1. Version detection (informational): bundle_state reads it as a
@@ -486,6 +499,7 @@ def scaffold_project(
 
     files_written = _copy_template_tree(TEMPLATES_DIR, target)
     files_written += _copy_shared_module(SHARED_VALIDATOR_PATH, target / "src")
+    files_written += _copy_shared_spec(SHARED_SPEC_PATH, target / "src")
     templated = _template_catalog_in_load_vocabulary(target, catalog)
     if templated == 0:
         _log.info(
@@ -600,6 +614,39 @@ def _copy_shared_module(src_file: Path, dst_dir: Path) -> int:
         raise FileNotFoundError(
             f"Shared validator module not found: {src_file}. "
             "The skill package is missing scripts/_omop_validator.py; "
+            "reinstall via `databricks workspace import-dir --overwrite ...`."
+        )
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src_file, dst_dir / src_file.name)
+    return 1
+
+
+def _copy_shared_spec(src_file: Path, dst_dir: Path) -> int:
+    """Copy the OMOP CDM v5.4 spec markdown into the customer's <target>/src/.
+
+    Used to ship ``references/omop_cdm_v54_spec.md`` (the canonical OMOP spec)
+    into the scaffolded project alongside the notebook and the shared
+    validator module so the notebook's call to
+    ``parse_omop_spec_md(spec_text)`` resolves at customer runtime against a
+    sibling-path read.
+
+    Sibling helper to ``_copy_shared_module`` rather than a generalized
+    multi-file copier because each shared-file pattern carries its own
+    semantic (validator = code single-source-of-truth; spec = data
+    single-source-of-truth) and conflating them now would couple their
+    lifecycles. v2.0.5 candidate to consider unification once a third
+    shared-file pattern emerges.
+
+    Returns 1 on success (parallel to ``_copy_shared_module``'s file count).
+    Raises ``FileNotFoundError`` if ``src_file`` doesn't exist — the skill
+    package is broken if the spec is missing, and silently scaffolding an
+    incomplete customer project would break Commit 2's notebook at runtime
+    in mysterious ways.
+    """
+    if not src_file.exists():
+        raise FileNotFoundError(
+            f"Shared OMOP spec not found: {src_file}. "
+            "The skill package is missing references/omop_cdm_v54_spec.md; "
             "reinstall via `databricks workspace import-dir --overwrite ...`."
         )
     dst_dir.mkdir(parents=True, exist_ok=True)
