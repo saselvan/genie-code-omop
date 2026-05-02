@@ -215,14 +215,163 @@ team's auth policy before adopting it.
 
 ## Azure DevOps Pipelines
 
-`<TODO Step 2: filled in by Phase 4 Step 2 commit.>`
+Common in HLS Azure customers. Drop this into `azure-pipelines.yml`
+at the repo root. **Modern Azure DevOps is YAML-first;** classic
+editor / release pipelines still exist but the YAML pipeline below
+is the recommended pattern. If your team is on classic editor,
+port the four logical steps (setup Python → install deps → pytest
+→ bundle validate) one-for-one into classic tasks.
 
-<!--
-Step-2 placeholder. The Azure DevOps Pipelines snippet ships in
-the next commit of this phase. Same coverage as the GitHub Actions
-snippet (Pydantic + bundle validate, no deploy, no pipeline runs),
-adapted to Azure DevOps service connection patterns.
--->
+Customize the four marked points (`# CUSTOMIZE`):
+
+```yaml
+# azure-pipelines.yml
+#
+# CI for omop-pipeline-builder-scaffolded projects on Azure DevOps.
+# Runs Pydantic schema validation and Databricks bundle validation
+# on every PR to main and every push to main. Does NOT deploy and
+# does NOT trigger pipeline runs — see references/recommended_ci_config.md
+# for why.
+
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  # CUSTOMIZE: link a variable group that holds the Databricks
+  # auth secrets. The recommended setup is a variable group
+  # backed by Azure Key Vault — secrets stay in Key Vault and the
+  # pipeline reads them at run time. Avoid storing the SP secret
+  # as a plain pipeline variable; HLS BAA policies typically
+  # forbid that.
+  #
+  # The variable group MUST expose three variables:
+  #   DATABRICKS_HOST          (e.g. https://adb-xxx.x.azuredatabricks.net)
+  #   DATABRICKS_CLIENT_ID     (SP application ID)
+  #   DATABRICKS_CLIENT_SECRET (SP OAuth secret; Key-Vault-backed)
+  - group: omop-databricks-prod
+
+  # CUSTOMIZE: rename if your team uses a different default target.
+  - name: DAB_TARGET
+    value: production
+
+  # CUSTOMIZE: align with your Databricks Runtime's Python version.
+  - name: PYTHON_VERSION
+    value: '3.11'
+
+steps:
+  - task: UsePythonVersion@0
+    displayName: 'Set up Python $(PYTHON_VERSION)'
+    inputs:
+      versionSpec: $(PYTHON_VERSION)
+
+  - script: |
+      python -m pip install --upgrade pip
+      # pyspark is required because the scaffolded
+      # tests/test_config_schema.py imports src/config_loader.py
+      # which imports pyspark at module level.
+      pip install \
+        pydantic \
+        pyyaml \
+        "pyspark>=3.5,<4.0"
+    displayName: 'Install Python dependencies'
+
+  - script: pytest tests/test_config_schema.py -v
+    displayName: 'Pydantic schema validation'
+
+  - script: |
+      # CUSTOMIZE: bump the version in the URL when ready
+      # (e.g., v0.260.0). No native Azure DevOps task ships for
+      # the Databricks CLI; the curl-pipe-sh installer is the
+      # documented official pattern. `sudo sh` ensures the binary
+      # lands in /usr/local/bin (already on the agent's PATH);
+      # without sudo the installer falls back to $HOME/.local/bin
+      # which is NOT on PATH for the current task and would force
+      # a vso prependpath workaround.
+      curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/v0.250.0/install.sh | sudo sh
+      databricks --version
+    displayName: 'Install Databricks CLI'
+
+  - script: databricks bundle validate -t $(DAB_TARGET)
+    displayName: 'Databricks bundle validate'
+    # Service principal OAuth M2M is the recommended pattern for
+    # production CI. The Databricks CLI auto-detects these three
+    # env vars from the variable group above; no flag wiring
+    # needed.
+    env:
+      DATABRICKS_HOST: $(DATABRICKS_HOST)
+      DATABRICKS_CLIENT_ID: $(DATABRICKS_CLIENT_ID)
+      DATABRICKS_CLIENT_SECRET: $(DATABRICKS_CLIENT_SECRET)
+```
+
+### Service connection alternative (for teams already wiring Azure subscriptions that way)
+
+If your team already has an Azure DevOps **service connection** to
+the Databricks workspace (set up via Project Settings → Service
+connections → Databricks), you can replace the variable-group
+auth pattern with the service connection. Service connections
+manage SP credentials centrally and avoid duplicating the secret
+across variable groups:
+
+```yaml
+  - task: AzureCLI@2
+    displayName: 'Databricks bundle validate (via service connection)'
+    inputs:
+      # CUSTOMIZE: name of your Databricks service connection.
+      azureSubscription: 'omop-databricks-prod-sc'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        export DATABRICKS_HOST="$(DATABRICKS_HOST)"
+        databricks bundle validate -t $(DAB_TARGET)
+```
+
+The `AzureCLI@2` task injects the SP's credentials into the
+process env automatically; the inline script reads
+`DATABRICKS_HOST` from the variable group and lets the CLI's
+auto-auth pick up the rest. Use this pattern only if your team
+already manages Databricks service connections — otherwise the
+plain variable-group pattern above is simpler.
+
+### Dev-only PAT alternative (NOT for production CI)
+
+For a personal sandbox or a lower-risk dev workspace, the same
+`Databricks bundle validate` step accepts a PAT instead of an SP:
+
+```yaml
+  - script: databricks bundle validate -t $(DAB_TARGET)
+    displayName: 'Databricks bundle validate (PAT — dev only)'
+    env:
+      DATABRICKS_HOST: $(DATABRICKS_HOST)
+      DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)
+```
+
+The variable group must then expose `DATABRICKS_TOKEN` (PAT)
+instead of the three SP variables. **Production HLS environments
+commonly forbid PATs in CI** — verify against your team's auth
+policy before adopting this pattern.
+
+### What to verify before merging this pipeline
+
+1. The four `# CUSTOMIZE` points are filled in for your repo.
+2. The variable group (or service connection) exists in your
+   Azure DevOps project, backed by Key Vault if your team's
+   policy requires.
+3. The SP / service connection has *read* access to the
+   workspace and to any UC resources `databricks.yml` references.
+4. `python -m pytest tests/test_config_schema.py` runs locally
+   against your repo before pushing the pipeline.
+5. The first run will likely prompt for permission to use the
+   variable group — grant it from the pipeline run page.
 
 ---
 
