@@ -41,6 +41,14 @@ TEMPLATES_DIR = (
     Path(__file__).resolve().parent.parent / "templates" / "project_scaffold"
 )
 
+# Shared validator module copied into the customer's <target>/src/ alongside
+# the notebook (see _copy_shared_module). Single-source-of-truth: the
+# validator lives here in scripts/ exactly once; v2.0.4c Commit 2's notebook
+# rewrite imports `from _omop_validator import ...`, which only resolves at
+# customer runtime if the scaffolder put a copy of this file next to the
+# notebook in the customer's deployed src/.
+SHARED_VALIDATOR_PATH = Path(__file__).resolve().parent / "_omop_validator.py"
+
 # Skill version stamped into a `.omop-skill-version` marker file at scaffold
 # time. The marker has two orthogonal uses:
 #   1. Version detection (informational): bundle_state reads it as a
@@ -477,6 +485,7 @@ def scaffold_project(
     catalog = volume_target.split(".")[0]
 
     files_written = _copy_template_tree(TEMPLATES_DIR, target)
+    files_written += _copy_shared_module(SHARED_VALIDATOR_PATH, target / "src")
     templated = _template_catalog_in_load_vocabulary(target, catalog)
     if templated == 0:
         _log.info(
@@ -564,6 +573,38 @@ def _copy_template_tree(src: Path, dst: Path) -> int:
         shutil.copy2(path, out)
         count += 1
     return count
+
+
+def _copy_shared_module(src_file: Path, dst_dir: Path) -> int:
+    """Copy a single shared-module file into the customer's <target>/src/.
+
+    Used to ship ``_omop_validator.py`` (the shared validation module) into
+    the scaffolded project alongside the notebook so the notebook's
+    ``from _omop_validator import ...`` resolves at customer runtime.
+
+    Sibling helper to ``_copy_template_tree`` rather than an extension of
+    it because the shared module is not part of the template tree —
+    template files live in ``templates/project_scaffold/`` and represent
+    the customer-facing scaffold; the shared module lives in ``scripts/``
+    and is the single source of truth for validation logic shared
+    between the CLI and the customer's notebook. Conflating the two
+    would couple the template tree's lifecycle to the shared module's.
+
+    Returns 1 on success (parallel to ``_copy_template_tree``'s file
+    count). Raises ``FileNotFoundError`` if ``src_file`` doesn't exist —
+    the skill package is broken if the shared module is missing, and
+    silently scaffolding an incomplete customer project would break
+    Commit 2's notebook at runtime in mysterious ways.
+    """
+    if not src_file.exists():
+        raise FileNotFoundError(
+            f"Shared validator module not found: {src_file}. "
+            "The skill package is missing scripts/_omop_validator.py; "
+            "reinstall via `databricks workspace import-dir --overwrite ...`."
+        )
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src_file, dst_dir / src_file.name)
+    return 1
 
 
 def _write_templated_files(
