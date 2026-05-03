@@ -5,7 +5,7 @@ license: MIT
 compatibility: Designed for Databricks Genie Code Agent mode launched from a notebook with a Python-capable cluster (serverless or classic). Genie Code launched from the catalog browser, a Genie Space, or the SQL editor is backed by a SQL warehouse and CANNOT run this skill's Step 6 Pydantic validator — see "Compute requirements" below. Requires databricks-sdk, pyyaml, pydantic. Run pipeline triggering uses Pipelines Editor native run when available, scripts/run_pipeline.py from notebooks.
 metadata:
   author: Samuel Selvan (Databricks SA)
-  version: "2.0.3"
+  version: "2.0.4"
   built_for_session: "2026-04-29 OMOP transform framework hands-on"
   v1_1_notes: "Vendor-neutralized; standalone YAML validator (no host-repo cd); workspace-scope deploy; canonical example flipped to fact-table shape."
   v1_2_notes: "STCM guidance reframed: source_to_concept_map UC table is the runtime source of truth; CSV seed at seed_data/source_to_concept_map_custom.csv is one of two write paths (alongside direct SQL/MERGE), not the only path. Added 'Adding source_to_concept_map mappings' section."
@@ -16,6 +16,7 @@ metadata:
   v2_0_1_notes: "Scaffolder now takes an explicit bronze_target (catalog.schema) — eliminates the v2.0 hardcoded `bronze_schema: bronze_clinical` default that didn't match real EHR landing zones (Caboodle, Clarity, Lakeflow Connect). Default is a `<CHANGEME>`-flagged placeholder so unreplaced values stay loud. Cross-catalog consistency assertion across volume_target + core_target + bronze_target prevents typo'd-catalog scaffolds. v1.6 upgrade machinery removed (no customer ran v1.6 or v2.0 in production); the marker file survives as a forward-looking breadcrumb but no scaffolder behavior branches on it. Re-scaffold over an existing project (databricks.yml present) now refuses uniformly — no marker logic. SKILL.md adds a 'Source of truth' note clarifying databricks.yml ↔ discovery.yaml precedence."
   v2_0_2_notes: "Scaffolder refuse-guard upgraded from single-indicator (databricks.yml present) to three-indicator (databricks.yml + src/ + .omop-skill-version marker all present). The marker takes on a second, behavioral role: written LAST, its presence means 'previous scaffold ran to completion.' Crashed scaffolds (databricks.yml + src/ but no marker — common failure mode: disk I/O failure between the YAML write and the marker write) are now retry-safe, no manual `rm -rf` required. Foreign databricks.yml files (e.g., from `databricks bundle init` before the customer decided to use the OMOP scaffolder) also fall through to retry. Customer files outside the scaffolded artifact set (e.g., `configs/<table>.yaml` drafts) survive retries untouched. Marker's two roles — informational for version detection, behavioral for completion detection — are orthogonal: this didn't reintroduce v1.6's upgrade-path machinery."
   v2_0_3_notes: "Silent-CLI-deletion regression closed. Commit e20c834 (2026-04-30, stated scope 'extract shared warehouse helper') silently emptied scripts/validate_omop.py (-342 lines) and scripts/generate_config.py (-247 lines); both files survived as 30/39-line stubs while SKILL.md continued documenting them as runnable surfaces, and no test exercised either CLI via subprocess. v2.0.3 restores validate_omop.py from e20c834~1 with the warehouse-helper extraction completed (scripts/_warehouse.resolve_warehouse_id now a strict superset of the pre-deletion inline helper, called from validate_omop.py); deletes generate_config.py as REDUNDANT (the v2.0 conversational generation flow strictly subsumes its job) and rewrites SKILL.md Step 5 as a six-substep description of the conversational flow; adds the CLI smoke test category at tests/test_validate_omop.py, tests/test_run_pipeline.py, tests/test_generate_source_mappings.py (pattern lifted from tests/test_scaffold_omop_project.py:TestCli, structural-fact assertions over message-string brittleness). With v2.0.3, 'untested CLI' is no longer a viable failure mode in this repo. Phase 4 rehearsal against fevm_serverless_stable.cap_quickstart_omop.omop confirmed the restored validator is operationally correct (Layer 5 caught an injected NULL person_id row, exit 1, no traceback) and surfaced 1.08M rows of domain-conformance violations on condition_occurrence — a table the notebook validator does not cover, substantiating the PARTIAL verdict that drove the restoration. See SESSION-STATE.md for the full post-mortem and BACKLOG.md for tracked v2.0.4 candidates."
+  v2_0_4_notes: "Spec audit + CLI/notebook validator unification + 20-table generalization. Three sub-phases: v2.0.4a corrected the OMOP CDM v5.4 spec markdown (10 critical findings + S1 source-concept-id Domain clearing across 13 columns + S2 23 inter-table FK targets across 12 tables + 6 missing tables added — visit_detail, device_exposure, note, note_nlp, specimen, dose_era — bringing the spec from 14 to 20 tables); v2.0.4b closed Layer 3/4/5 spec-vs-actual coupling (missing columns now SKIP cleanly via Layer 1's missing_cols hand-off rather than UNRESOLVED_COLUMN-tracebacking) and wrapped SDK exceptions in validate_omop._sql so warehouse misconfiguration surfaces as user-actionable SystemExit messages; v2.0.4c extracted layer functions to scripts/_omop_validator.py (consumed by both CLI and notebook), introduced structured Finding / LayerResult dataclasses for DataFrame display, scaffolded the shared module + spec into customer projects, generalized notebook coverage from 2 hardcoded tables to all 20 spec-covered tables, closed the deferred Layer 2 coupling-fix from v2.0.4b (Commit 2.5: every layer that would have done work emits SKIP on missing tables; Layer 3/4 emit aggregate SKIP rather than misleading PASS when all per-column checks are skipped), added 34 direct unit tests on the shared module, scrubbed 31 phase references from production code (including a customer-facing scaffold test that was leaking v2.0.x phase naming into customer projects), and added a rehearsal harness with try/finally cleanup guarantees and provenance logging. Customer-visible: notebook validator now describes catalog-vs-spec coverage for all 20 tables, including clean schema:table_missing findings for tables the customer hasn't built. See SESSION-STATE.md for full per-sub-phase post-mortem and BACKLOG.md for v2.0.5 candidates."
 ---
 
 # OMOP Pipeline Builder
@@ -565,7 +566,7 @@ End with: "When you've reviewed and accepted these, pick option 2 or 3 to deploy
 ```
 CATALOG=your_catalog ./deploy.sh production
 databricks bundle run omop_full_build -t production
-# After pipeline completes: open src/99_validate_omop_output.py, set table={table_name}, Run All
+# After pipeline completes: open src/99_validate_omop_output.py and Run All — every spec-covered table the pipeline materialized is validated automatically
 ```
 If the pipeline resource and job task don't exist yet for this table, say so and offer: "Ask me to wire {table_name} into the DAG — I'll generate the pipeline resource and job task YAML."
 
@@ -856,9 +857,9 @@ Both paths converge on the same physical table — the pipeline does not care wh
 
 ## Healthcare / OMOP tokens
 
-**OMOP table names this skill recognizes (clinical scope):**
+**OMOP table names this skill recognizes (clinical scope, 20 tables as of v2.0.4):**
 
-`person`, `observation_period`, `visit_occurrence`, `condition_occurrence`, `procedure_occurrence`, `drug_exposure`, `measurement`, `observation`, `death`, `location`, `care_site`, `provider`, `condition_era`, `drug_era`
+`person`, `observation_period`, `visit_occurrence`, `visit_detail`, `condition_occurrence`, `procedure_occurrence`, `drug_exposure`, `device_exposure`, `measurement`, `observation`, `note`, `note_nlp`, `specimen`, `death`, `location`, `care_site`, `provider`, `condition_era`, `drug_era`, `dose_era`
 
 **Concept domain names (and typical `*_concept_id` columns):**
 
@@ -869,7 +870,7 @@ Both paths converge on the same physical table — the pipeline does not care wh
 ## Not for
 
 This skill does NOT handle:
-- **Phase 5+ tables** (note, note_nlp, specimen, episode, fact_relationship) — see `references/omop_dag_dependencies.md` for the out-of-scope list
+- **OMOP CDM tables not yet in scope** (`episode`, `fact_relationship`) — see `references/omop_dag_dependencies.md` for the out-of-scope list. (v2.0.4 added `visit_detail`, `device_exposure`, `note`, `note_nlp`, `specimen`, `dose_era` to bring spec coverage from 14 to 20 tables; `episode` and `fact_relationship` remain deliberately out of scope per the dependency notes.)
 - **SCD2 / slowly changing dimensions** — use SDP's `create_auto_cdc_flow` directly (see the production path in the runbook)
 - **OHDSI Atlas / Achilles / White Rabbit** — separate OHDSI tools for cohort building, data quality dashboards, and source profiling
 - **Cross-network federated research** — OMOP network study participation requires infrastructure beyond this ETL framework
