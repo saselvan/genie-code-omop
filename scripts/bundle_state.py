@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """Read the current state of an OMOP project bundle from disk.
 
-Phase 1 of omop-pipeline-builder v2.0 introduces state-aware workflow:
-before generating new configs or wiring tasks, the agent reads what already
-exists and branches accordingly. This module is the read-only state probe
-that produces a structured `BundleState` snapshot.
+State-aware workflow: before generating new configs or wiring tasks,
+the agent reads what already exists and branches accordingly. This
+module is the read-only state probe that produces a structured
+`BundleState` snapshot.
 
 Decision 7: re-read on every invocation. No manifest, no caching.
 Decision 10: Git-backed bundles are the recommended default; Git status is
 part of state. Decision 12: this module does not deploy.
 
-CLI is a developer-loop tool. Programmatic callers (Phase 2's
-`classify_request`, Phase 3's update workflow) should use
-``read_bundle_state()`` directly.
+CLI is a developer-loop tool. Programmatic callers (`classify_request`,
+the update workflow) should use ``read_bundle_state()`` directly.
 
 Auth is handled by Databricks runtime when invoked from Genie Code Agent.
 ``--profile`` only applies for local development against ``~/.databrickscfg``.
@@ -33,10 +32,10 @@ from _workspace_probes import _probe_silver_tables as _probe_silver_via_helper
 
 _MARKER_FILENAME = ".omop-skill-version"
 
-# Strict canonical form for OMOP table names. Phase 2 helpers reject any
-# input that does not match this regex with ValueError, both for safety
-# (path traversal, weird unicode) and for consistency (configs ship as
-# lowercase snake_case, never PascalCase).
+# Strict canonical form for OMOP table names. Request-classification
+# helpers reject any input that does not match this regex with ValueError,
+# both for safety (path traversal, weird unicode) and for consistency
+# (configs ship as lowercase snake_case, never PascalCase).
 _TARGET_TABLE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 # Per-call timeout for individual git subprocess invocations. Generous
@@ -135,9 +134,9 @@ def _list_yaml_configs(configs_dir: Path) -> tuple[list[str], list[str]]:
 
     ``configs_present`` is the sorted list of YAML filenames (basenames with
     extension). ``ambiguous_configs`` is the sorted list of stems that have
-    BOTH ``.yaml`` and ``.yml`` siblings — a Phase 2 hard signal that the
-    agent must refuse to process the table until the engineer resolves the
-    extension conflict.
+    BOTH ``.yaml`` and ``.yml`` siblings — a hard signal during request
+    classification that the agent must refuse to process the table until
+    the engineer resolves the extension conflict.
 
     Missing directories return ``([], [])`` — never raises.
     """
@@ -172,8 +171,9 @@ def _parse_jobs_yml_tasks(jobs_yml_path: Path) -> tuple[list[str], list[str]]:
     not from jobs.yml's textual ordering).
 
     A task that appears both wired AND commented (mid-edit state) is
-    returned in BOTH lists. Phase 2 consumers treat the wired entry as
-    authoritative when both are present; this parser does not editorialize.
+    returned in BOTH lists. Request-classification consumers treat the
+    wired entry as authoritative when both are present; this parser does
+    not editorialize.
     """
     if not jobs_yml_path.exists() or not jobs_yml_path.is_file():
         return [], []
@@ -501,7 +501,7 @@ def classify_request(
 def _table_state_level(state: BundleState, table: str) -> int:
     """Return the L0-L3 state level for ``table`` in the given bundle state.
 
-    Levels (per Phase 2 spec):
+    Levels (per the request-classification spec):
 
     - **L0** — no config locally. (Includes the anomaly where a table
       appears in ``silver_tables`` with no local config: the skill
@@ -681,7 +681,7 @@ def _format_state(state: BundleState) -> str:
     if state.ambiguous_configs:
         lines.append(
             f"  ambiguous configs ({len(state.ambiguous_configs)}) — "
-            "Phase 2 will refuse until resolved:"
+            "the agent will refuse these until resolved:"
         )
         for stem in state.ambiguous_configs:
             lines.append(f"    ! {stem} (both .yaml and .yml present)")
@@ -725,8 +725,8 @@ def _format_state(state: BundleState) -> str:
 def _cli(argv: list[str] | None = None) -> int:
     """Developer-loop debugging CLI. Not a customer-facing interface.
 
-    Programmatic callers (Phase 2's ``classify_request``, Phase 3's update
-    workflow) should call ``read_bundle_state()`` directly.
+    Programmatic callers (``classify_request``, the update workflow)
+    should call ``read_bundle_state()`` directly.
     """
     parser = argparse.ArgumentParser(
         description=(

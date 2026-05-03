@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Field-level structural diff between two OMOP YAML configs.
 
-Phase 3 Step 5 of omop-pipeline-builder v2.0. The Update sub-path's
-prompt template needs a structured description of what changed
-between the existing config and the regenerated config so the
-reviewer-ratification step (Step 4 of SKILL.md) can scope its
+Powers the Update sub-path's reviewer-ratification step. The Update
+sub-path's prompt template needs a structured description of what
+changed between the existing config and the regenerated config so
+the reviewer-ratification step (Step 4 of SKILL.md) can scope its
 fidelity checks to the actual deltas. The changelog is also
 informational input to the response template — telling the engineer
 "the regenerated config changes vocabulary_lookups[2].vocabulary_id
@@ -47,7 +47,7 @@ from validate_yaml_schema import OMOPConfig, validate_text
 # so "." is unambiguous (no key contains a literal dot). List indices
 # use bracket notation appended to the parent key; nested lists nest
 # bracket pairs (e.g., ``foo[0][1]``). Both conventions match the
-# Phase 3 spec example: ``column_mappings[3].target``.
+# Update sub-path spec example: ``column_mappings[3].target``.
 _PATH_DOT = "."
 
 
@@ -272,9 +272,9 @@ def _diff_list(
     Positional comparison. Shared indices recurse; trailing indices
     on the longer side surface as added (NEW longer) or removed
     (OLD longer). Reordering without value change surfaces as
-    multiple ``modified`` entries — Phase 3 spec acknowledges this
-    as a known limitation; future Phase 3.1 may add ordered-set
-    semantics if real use produces noise.
+    multiple ``modified`` entries — the Update sub-path spec
+    acknowledges this as a known limitation; a future revision may
+    add ordered-set semantics if real use produces noise.
     """
     shared = min(len(old), len(new))
 

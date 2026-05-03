@@ -1,11 +1,11 @@
 """Validate all configs/*.yaml against OMOPConfig and cross-field consistency rules.
 
-Phase 4 CI pipelines (GitHub Actions, Azure DevOps) run this test against the
+CI pipelines (GitHub Actions, Azure DevOps) run this test against the
 scaffolded project on every PR. Out-of-the-box behavior on a fresh scaffold:
 
   - configs/ contains only `_schema.yaml` (which is excluded — see SKIP_FILES).
   - test_template_health below ensures pytest collects at least one test and
-    exits 0, so the Phase 4 CI snippet succeeds immediately after scaffold.
+    exits 0, so the CI snippet succeeds immediately after scaffold.
   - As you commit configs/<table>.yaml files, test_config_validates picks them
     up automatically via the parametrize collection.
 
@@ -38,7 +38,7 @@ CONFIG_FILES = [
 def test_template_health() -> None:
     """Smoke check that always passes. Guarantees pytest collects ≥1 test, so
     `pytest tests/test_config_schema.py` exits 0 even when configs/ is empty
-    (e.g., immediately after scaffold). Phase 4 CI snippets rely on this.
+    (e.g., immediately after scaffold). CI snippets rely on this.
     """
     assert CONFIG_DIR.exists(), f"configs/ missing at {CONFIG_DIR}"
 

@@ -12,7 +12,7 @@ Currently exposes:
 - ``_probe_existing_tables(core_target, profile=None)`` — list tables in a
   ``catalog.schema`` target. Used by the scaffolder Step 0 flow.
 - ``_probe_silver_tables(core_target, profile=None)`` — list tables in a
-  ``catalog.schema`` target. Used by Phase 1's ``read_bundle_state``. Same
+  ``catalog.schema`` target. Used by ``read_bundle_state``. Same
   semantics as ``_probe_existing_tables`` but accepts ``core_target=None``
   (returns ``([], None)``).
 
@@ -136,8 +136,8 @@ def _probe_existing_tables(
     """List tables in <core_target>. Best-effort, opaque skip-reason on failure.
 
     Used by the scaffolder Step 0 flow to surface existing OMOP tables. Lifted
-    from ``scaffold_omop_project.py`` in Phase 1 Step 1; hardened in Step 2 to
-    use the SDK-then-Spark fallback shared with ``_probe_silver_tables``.
+    from ``scaffold_omop_project.py`` and hardened to use the SDK-then-Spark
+    fallback shared with ``_probe_silver_tables``.
     """
     return _list_tables_with_fallback(core_target, profile)
 

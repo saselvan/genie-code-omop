@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Write OMOP YAML configs to a scaffolded project's configs/ directory.
 
-Phase 3 of omop-pipeline-builder v2.0 introduces the Update sub-path: when
-the engineer chooses "Update" from Step 2's three sub-paths, the agent
-regenerates the whole config and writes the new version through this
-module. ``write_config`` is the single shared write surface for the
+The shared write surface for the Update, Replace, and Generate sub-paths.
+When the engineer chooses "Update" from Step 2's three sub-paths, the
+agent regenerates the whole config and writes the new version through
+this module. ``write_config`` is the single shared write surface for the
 Update and Replace sub-paths; the Generate sub-path (greenfield) writes
 through this same surface with ``overwrite=False``.
 
@@ -31,8 +31,8 @@ This file ships the Step 1 + 2 + 3 + 4 surface:
     caller passes ``expected_mtime``, the writer raises
     :class:`MtimeMismatchError` if the on-disk mtime differs (or the
     target file is gone). Stable mode is the option (b) branch from
-    Phase 0a's FUSE spike; the unstable-mode informational-warning
-    branch is not shipped because Phase 0a's spike concluded the
+    the FUSE-mtime stability spike; the unstable-mode informational-
+    warning branch is not shipped because the spike concluded the
     Volume FUSE mtime is stable enough to block on.
   - ``WriteResult.mtime_warning`` stays ``None`` in stable mode and
     exists only as a forward-compatible field for future builds that
@@ -49,16 +49,14 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-# Same-skill internal import: bundle_state houses the Git probe Phase 1
-# landed (the original Phase 3 spec called for it under
-# _workspace_probes, but Phase 1 kept it in bundle_state because the
-# probe is a local-filesystem concern, not a workspace/SDK concern;
-# spec deviation documented in SESSION-STATE Phase 3 handoff). We
-# import the private symbol on purpose — both modules ship together
-# in this skill and the boundary is ours to draw.
+# Same-skill internal import: bundle_state houses the Git probe (it
+# lives there rather than in _workspace_probes because Git status is a
+# local-filesystem concern, not a workspace/SDK concern). We import the
+# private symbol on purpose — both modules ship together in this skill
+# and the boundary is ours to draw.
 from bundle_state import _probe_git_status
 
-# Canonical lowercase snake_case regex — matches Phase 2's
+# Canonical lowercase snake_case regex — matches
 # bundle_state._TARGET_TABLE_RE. Duplicated rather than imported to keep
 # config_writer.py independent of bundle_state's import graph (which
 # pulls _workspace_probes and the Databricks SDK transitively). The two
@@ -68,7 +66,7 @@ from bundle_state import _probe_git_status
 _TARGET_TABLE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 # Decision-10 honest warning text for non-Git'd projects. Verbatim from
-# the Phase 3 spec — names cloud-side storage versioning as the
+# the Update sub-path spec — names cloud-side storage versioning as the
 # alternative because the skill itself ships no snapshot mechanism.
 # The text is informational only; the writer never blocks on this.
 _GIT_WARNING_NOT_A_REPO = (
@@ -86,7 +84,7 @@ _GIT_WARNING_NOT_A_REPO = (
 # round-trips ``expected_mtime`` through JSON or a database column
 # whose precision is lower than ``os.stat().st_mtime``'s nanosecond
 # representation. 1 microsecond is well below any realistic write
-# spacing on a Volume FUSE mount per Phase 0a's spike.
+# spacing on a Volume FUSE mount per the FUSE-mtime stability spike.
 _MTIME_TOLERANCE_SECONDS = 1e-6
 
 
@@ -155,8 +153,8 @@ class WriteResult:
             Never blocks the write. Populated by Step 3.
         mtime_warning: Forward-compatibility field for future
             unstable-mode builds. Always ``None`` in this build per
-            Phase 0a's FUSE-stable conclusion; mtime mismatches in
-            stable mode raise :class:`MtimeMismatchError`.
+            the FUSE-mtime stability spike's conclusion; mtime
+            mismatches in stable mode raise :class:`MtimeMismatchError`.
     """
 
     config_path: str
@@ -180,9 +178,9 @@ def write_config(
 
     - Validates ``target_table`` against the canonical lowercase regex
       ``^[a-z][a-z0-9_]*$``; raises :class:`ValueError` on mismatch.
-      Same gate Phase 2's ``classify_request`` enforces, repeated here
-      so the writer is safe to call directly without a prior
-      classification pass. The validation gate fires BEFORE any
+      Same gate ``classify_request`` enforces, repeated here so the
+      writer is safe to call directly without a prior classification
+      pass. The validation gate fires BEFORE any
       filesystem side effects, so a malicious target name cannot leave
       a stray ``configs/`` behind.
     - Creates ``<project_path>/configs/`` if it doesn't exist (defensive
@@ -276,9 +274,9 @@ def write_config(
     # effect (no mkdir, no tempfile) so a failed check leaves the
     # caller's tree exactly as it was. The on-disk stat happens just
     # in time to minimize the race window between the check and the
-    # subsequent atomic write — Phase 3 spec accepts a millisecond-
-    # scale window because the failure modes this protects against
-    # (multi-engineer / multi-tab) operate at second+ scales.
+    # subsequent atomic write — the Update sub-path spec accepts a
+    # millisecond-scale window because the failure modes this protects
+    # against (multi-engineer / multi-tab) operate at second+ scales.
     if expected_mtime is not None:
         _enforce_expected_mtime(target_path, expected_mtime)
 
