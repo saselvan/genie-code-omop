@@ -9,14 +9,18 @@ spec markdown are scaffolded next to this notebook in the customer's
 ``_copy_shared_spec`` in ``scripts/scaffold_omop_project.py``).
 
 Set widgets (``catalog``, ``core_schema``, ``ref_schema``), then run.
-Validates each table named in ``TABLES`` (currently ``person`` +
-``visit_occurrence``); v2.0.4c Commit 3 will replace ``TABLES`` with the
-full set of spec-covered tables.
+Validates every table the OMOP CDM v5.4 spec covers (after v2.0.4c
+Commit 3, that is all 20 spec-covered tables — Commit 3 replaced the
+hardcoded 2-table ``TABLES`` list with ``sorted(spec_map)`` iteration).
+Tables present in the spec but missing from the customer's catalog
+produce a clean ``schema:table_missing`` finding from Layer 1 plus
+per-layer SKIPs (verified end-to-end by v2.0.4c Commit 2.5's
+device_exposure probe); they do not raise tracebacks.
 
 The pre-Commit-2 notebook accepted a ``table`` widget that selected a
-single table per invocation. That widget was dropped in Commit 2: the
-notebook now iterates the ``TABLES`` list unconditionally, which is the
-shape v2.0.4c Commit 3 will generalize.
+single table per invocation. That widget was dropped in Commit 2; the
+spec-driven iteration in Commit 3 makes per-invocation table selection
+semantically meaningless (every spec table is checked unconditionally).
 
 Runs as a Databricks Python task or as a notebook (re-add a ``# Databricks
 notebook source`` header on line 1 for notebook-task semantics).
@@ -85,10 +89,6 @@ catalog = dbutils.widgets.get("catalog")
 core_schema = dbutils.widgets.get("core_schema")
 ref_schema = dbutils.widgets.get("ref_schema")
 
-# Hardcoded table coverage. v2.0.4c Commit 3 generalizes this to
-# ``sorted(spec_map)`` so all spec-covered tables are validated.
-TABLES: list[str] = ["person", "visit_occurrence"]
-
 
 def notebook_sql_fn(*, statement: str) -> list[list]:
     """Adapter passed into the shared module's layer functions.
@@ -105,12 +105,8 @@ def notebook_sql_fn(*, statement: str) -> list[list]:
 spec_map = parse_omop_spec_md(SPEC_PATH.read_text(encoding="utf-8"))
 
 results: list[dict] = []
-for table in TABLES:
-    cols = spec_map.get(table)
-    if cols is None:
-        print(f"WARN: no spec entry for '{table}'; skipping")
-        continue
-
+for table in sorted(spec_map):
+    cols = spec_map[table]
     fq = f"`{catalog}`.`{core_schema}`.`{table}`"
     concept = f"`{catalog}`.`{ref_schema}`.concept"
 
