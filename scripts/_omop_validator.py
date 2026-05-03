@@ -222,6 +222,22 @@ WHERE table_catalog = '{cat}' AND table_schema = '{sch}' AND table_name = '{tbl}
 
     failures = 0
     findings: list[Finding] = []
+    table_missing = not actual
+    if table_missing:
+        msg = (
+            f"table `{cat}`.`{sch}`.`{tbl}` does not exist in catalog; "
+            f"subsequent layers will skip checks for this table"
+        )
+        print(f"FAIL: {msg}")
+        findings.append(
+            Finding(
+                layer=1,
+                status="FAIL",
+                check="schema:table_missing",
+                message=msg,
+            )
+        )
+        failures = 1
     if missing or extra or type_mismatch:
         failures = 1
         if missing:
@@ -258,7 +274,7 @@ WHERE table_catalog = '{cat}' AND table_schema = '{sch}' AND table_name = '{tbl}
                         message=m,
                     )
                 )
-    else:
+    elif not table_missing:
         print("PASS: column names and coarse types align with spec.")
         findings.append(
             Finding(
@@ -274,16 +290,26 @@ WHERE table_catalog = '{cat}' AND table_schema = '{sch}' AND table_name = '{tbl}
 def run_layer_2(
     cols: list[ColSpec],
     fq: str,
+    missing_cols: set[str],
     sql_fn: SqlFn,
 ) -> LayerResult:
     """Layer 2: PK uniqueness.
 
-    NOTE: Layer 2 has the same spec/actual coupling pattern as Layers 3, 4, 5
-    — if a spec PK column is missing from the actual table, the GROUP BY
-    will UNRESOLVED_COLUMN. v2.0.4b deferred this fix per BACKLOG: Phase 4
-    did not surface a Layer 2 symptom, and the cross-row uniqueness failure
-    mode shape doesn't obviously map to the spec/actual mismatch case.
-    Revisit during a focused review against v2.0.4c-merged main.
+    Short-circuits with a SKIP finding (no SQL fired) when every PK column
+    is in ``missing_cols`` — the table-missing case (every spec column
+    absent from actual) and the all-PKs-drifted case (rare) both match.
+    Without the short-circuit, the GROUP BY query would raise
+    TABLE_OR_VIEW_NOT_FOUND or UNRESOLVED_COLUMN respectively, surfacing
+    as a Spark traceback rather than a customer-actionable finding. The
+    partial-PK-drift case (some PK cols present, some not) still fires
+    the query — that combination doesn't fit Layer 2's cross-row shape
+    and is a v2.0.5 candidate (rare in OMOP, where most tables have
+    single-column PKs).
+
+    Closes the deferred Layer 2 coupling fix from v2.0.4b
+    (``run_layer_2``'s previous docstring named the deferral and v2.0.4c
+    Commit 3 pre-flight surfaced the missing-table failure mode against
+    a partially-built customer catalog).
     """
     print("== Layer 2: primary key uniqueness ==")
     findings: list[Finding] = []
@@ -300,6 +326,18 @@ def run_layer_2(
         )
         return LayerResult(failure_count=0, findings=findings)
     pk_list = ", ".join(pks)
+    if all(_should_skip_check(p, missing_cols) for p in pks):
+        msg = "PK columns missing from actual table (Layer 1)"
+        print(f"SKIP: pk_uniqueness:{pk_list}: {msg}")
+        findings.append(
+            Finding(
+                layer=2,
+                status="SKIP",
+                check=f"pk_uniqueness:{pk_list}",
+                message=msg,
+            )
+        )
+        return LayerResult(failure_count=0, findings=findings)
     dup_sql = f"""
 SELECT {pk_list}, COUNT(*) AS c FROM {fq} GROUP BY {pk_list} HAVING COUNT(*) > 1 LIMIT 20
 """
@@ -381,6 +419,18 @@ WHERE s.`{c.name}` IS NOT NULL AND s.`{c.name}` <> 0 AND c.concept_id IS NULL
                 )
             )
         return LayerResult(failure_count=1, findings=findings)
+    if concept_cols and len(skipped) == len(concept_cols):
+        msg = "all concept_id checks skipped (every concept column missing per Layer 1)"
+        print(f"SKIP: concept_fk: {msg}")
+        findings.append(
+            Finding(
+                layer=3,
+                status="SKIP",
+                check="concept_fk",
+                message=msg,
+            )
+        )
+        return LayerResult(failure_count=0, findings=findings)
     suffix = " (some skipped per Layer 1)" if skipped else ""
     print(f"PASS: all non-null non-zero concept_ids resolve to reference.concept{suffix}.")
     findings.append(
@@ -409,9 +459,8 @@ def run_layer_4(
     findings: list[Finding] = []
     skipped: list[str] = []
     dom_fails: list[tuple[str, str]] = []
-    for c in cols:
-        if not c.domain or not c.name.endswith("_concept_id"):
-            continue
+    domain_cols = [c for c in cols if c.domain and c.name.endswith("_concept_id")]
+    for c in domain_cols:
         if _should_skip_check(c.name, missing_cols):
             skipped.append(c.name)
             continue
@@ -450,6 +499,18 @@ WHERE s.`{col}` IS NOT NULL AND s.`{col}` <> 0
                 )
             )
         return LayerResult(failure_count=1, findings=findings)
+    if domain_cols and len(skipped) == len(domain_cols):
+        msg = "all domain checks skipped (every annotated concept column missing per Layer 1)"
+        print(f"SKIP: domain: {msg}")
+        findings.append(
+            Finding(
+                layer=4,
+                status="SKIP",
+                check="domain",
+                message=msg,
+            )
+        )
+        return LayerResult(failure_count=0, findings=findings)
     suffix = " (some skipped per Layer 1)" if skipped else ""
     print(f"PASS: domain checks for annotated concept columns{suffix}.")
     findings.append(
@@ -472,9 +533,26 @@ def run_layer_5(
     """Layer 5: completeness (NOT NULL columns must have zero NULLs).
 
     Skips columns reported missing by Layer 1 — see ``_should_skip_check``.
+    Short-circuits entirely (no SQL fired) if every spec column is in
+    ``missing_cols`` (table-missing case): the pre-loop ``SELECT
+    COUNT(*) FROM {fq}`` denominator query would TABLE_OR_VIEW_NOT_FOUND
+    and surface as a Spark traceback rather than a customer-actionable
+    finding.
     """
     print("== Layer 5: completeness (NOT NULL columns must have zero NULLs) ==")
     findings: list[Finding] = []
+    if cols and all(_should_skip_check(c.name, missing_cols) for c in cols):
+        msg = "table missing from actual catalog (Layer 1)"
+        print(f"SKIP: not_null: {msg}")
+        findings.append(
+            Finding(
+                layer=5,
+                status="SKIP",
+                check="not_null",
+                message=msg,
+            )
+        )
+        return LayerResult(failure_count=0, findings=findings)
     skipped: list[str] = []
     null_fails: list[tuple[str, str]] = []
     total_rows = sql_fn(statement=f"SELECT COUNT(*) FROM {fq}")

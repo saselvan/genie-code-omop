@@ -116,7 +116,7 @@ for table in TABLES:
 
     print(f"=== Validating {fq} ===")
     r1 = run_layer_1(cols, catalog, core_schema, table, notebook_sql_fn)
-    r2 = run_layer_2(cols, fq, notebook_sql_fn)
+    r2 = run_layer_2(cols, fq, r1.missing_cols, notebook_sql_fn)
     r3 = run_layer_3(cols, fq, concept, r1.missing_cols, notebook_sql_fn)
     r4 = run_layer_4(cols, fq, concept, r1.missing_cols, notebook_sql_fn)
     r5 = run_layer_5(cols, fq, r1.missing_cols, notebook_sql_fn)

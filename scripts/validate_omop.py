@@ -139,7 +139,7 @@ def main() -> None:
     r1 = run_layer_1(cols, cat, sch, tbl, sql_fn)
     missing_cols = r1.missing_cols
     failures = r1.failure_count
-    failures += run_layer_2(cols, fq, sql_fn).failure_count
+    failures += run_layer_2(cols, fq, missing_cols, sql_fn).failure_count
     failures += run_layer_3(cols, fq, concept, missing_cols, sql_fn).failure_count
     failures += run_layer_4(cols, fq, concept, missing_cols, sql_fn).failure_count
     failures += run_layer_5(cols, fq, missing_cols, sql_fn).failure_count
