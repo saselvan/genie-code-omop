@@ -4,6 +4,30 @@ This note is an **abridged** abridged summary of required shapes for validation 
 
 Machine-readable tables below use: **Nullable** `N` = NOT NULL, `Y` = nullable. **PK** `Y` marks the primary key column. **FK** uses `concept.concept_id` or `person.person_id` style hints. **Domain** is used by `scripts/validate_omop.py` for domain conformance checks on `*_concept_id` columns.
 
+## Encoding Principles
+
+### The encoding rule
+
+**Domain** and **FK** Table cells in this spec follow OHDSI's table cells where OHDSI is explicit. Where OHDSI's table cell is silent, this spec encodes unambiguous narrative-stated values and leaves the cell blank where (a) OHDSI's narrative is actively cautioned, (b) OHDSI's table cell explicitly contradicts narrative, or (c) the column is polymorphic (FK target depends on a companion column).
+
+This rule produces conformance checks that match what an OHDSI conformance test would check (see [OHDSI DataQualityDashboard](https://github.com/OHDSI/DataQualityDashboard)) while avoiding false positives on columns where OHDSI's intent is genuinely ambiguous.
+
+### Examples from the existing spec
+
+These four cases illustrate each branch of the rule. Each cites a specific spec row plus the OHDSI table cell and narrative shape it follows.
+
+- **Encoded narrative** (OHDSI table cell silent, narrative explicit) — `care_site.place_of_service_concept_id` is encoded with Domain `Visit`. OHDSI's [care_site table cell](https://ohdsi.github.io/CommonDataModel/cdm54.html#care_site) leaves the FK Domain blank, but the ETL Conventions narrative explicitly says "Choose the concept in the visit domain that best represents the setting in which healthcare is provided in the Care Site." This case was triaged during v2.0.4a sub-phase A and is the canonical example that surfaced this principle.
+
+- **Blank because OHDSI is silent** (OHDSI table cell silent, narrative also silent or "no specified domain") — `observation.observation_concept_id` has Domain blank. OHDSI's [observation table cell](https://ohdsi.github.io/CommonDataModel/cdm54.html#observation) leaves FK Domain blank, and the ETL Conventions narrative explicitly says "There is no specified domain that the Concepts in this table must adhere to." Same shape: `death.cause_concept_id` (OHDSI narrative says "There is no specified domain for this concept").
+
+- **Blank because OHDSI cautions** (OHDSI table cell silent, narrative warns the vocabulary is unstable) — `procedure_occurrence.modifier_concept_id` has Domain blank. OHDSI's [procedure_occurrence table cell](https://ohdsi.github.io/CommonDataModel/cdm54.html#procedure_occurrence) leaves FK Domain blank, and the User Guide narrative says "the modifiers are intended to give additional information about the procedure but as of now the vocabulary is under review." Encoding any specific Domain here would over-commit to a vocabulary OHDSI itself flags as unsettled.
+
+- **Blank because polymorphic** (FK target depends on a companion `*_event_field_concept_id` column) — `measurement.measurement_event_id` has FK blank. OHDSI's [measurement table cell](https://ohdsi.github.io/CommonDataModel/cdm54.html#measurement) marks Foreign Key as "No" because the linked record's table is determined at runtime by `meas_event_field_concept_id`. Same shape: `observation.observation_event_id`, `note.note_event_id`.
+
+### Pointer to decisions log
+
+For borderline cases where the principle's application is genuinely ambiguous (e.g., a narrative that mentions a domain in passing but doesn't mandate it, or a column whose narrative names two candidate domains), see [`spec_domain_decisions.md`](./spec_domain_decisions.md) for case-by-case reasoning.
+
 ## person
 
 | Column | Type | Nullable | PK | FK | Domain |
