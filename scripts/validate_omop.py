@@ -21,6 +21,8 @@ from databricks.sdk.errors import InvalidParameterValue, NotFound
 from databricks.sdk.service.sql import StatementState
 
 from _omop_validator import (
+    ColSpec,
+    LayerResult,
     SqlFn,
     parse_omop_spec_md,
     run_layer_1,
@@ -81,6 +83,173 @@ def _sql(
     return rows or []
 
 
+def _layer1_line(cols: list[ColSpec], r: LayerResult) -> str:
+    if any(f.check == "schema:table_missing" for f in r.findings):
+        return "table missing from catalog"
+    spec_count = len(cols)
+    missing = sum(1 for f in r.findings if f.check.startswith("schema:missing:"))
+    type_mm = sum(1 for f in r.findings if f.check.startswith("schema:type:"))
+    extras = sum(1 for f in r.findings if f.check.startswith("schema:extra:"))
+    matched = spec_count - missing - type_mm
+    parts = [f"{spec_count} cols expected", f"{matched} aligned"]
+    if missing:
+        parts.append(f"{missing} missing")
+    if type_mm:
+        parts.append(f"{type_mm} type mismatch{'es' if type_mm != 1 else ''}")
+    if extras:
+        parts.append(f"{extras} extra (warn)")
+    return ", ".join(parts)
+
+
+def _layer2_line(cols: list[ColSpec], r: LayerResult) -> str:
+    pks = [c for c in cols if c.pk]
+    if not pks:
+        return "no PK in spec (skipped)"
+    if any(f.status == "SKIP" for f in r.findings):
+        return f"{len(pks)} PK col(s) skipped (missing per Layer 1)"
+    if r.failure_count:
+        return f"{len(pks)} PK col(s) checked, duplicates found"
+    return f"{len(pks)} PK col(s) checked, 0 duplicates"
+
+
+def _layer3_line(cols: list[ColSpec], r: LayerResult) -> str:
+    concept_cols = [c for c in cols if c.name.endswith("_concept_id")]
+    n = len(concept_cols)
+    if n == 0:
+        return "no concept_id columns in spec"
+    skipped_per_col = sum(
+        1
+        for f in r.findings
+        if f.status == "SKIP" and f.check.startswith("concept_fk:")
+    )
+    failed_per_col = sum(
+        1
+        for f in r.findings
+        if f.status == "FAIL" and f.check.startswith("concept_fk:")
+    )
+    checked = n - skipped_per_col
+    if r.failure_count:
+        return (
+            f"{checked} of {n} concept_id col(s) checked, "
+            f"{failed_per_col} with unresolved values"
+        )
+    if skipped_per_col:
+        return (
+            f"{checked} of {n} concept_id col(s) checked "
+            f"({skipped_per_col} skipped per Layer 1), all resolve"
+        )
+    return f"{n} concept_id col(s) checked, all resolve"
+
+
+def _layer4_line(cols: list[ColSpec], r: LayerResult) -> str:
+    domain_cols = [c for c in cols if c.domain and c.name.endswith("_concept_id")]
+    n = len(domain_cols)
+    if n == 0:
+        return "no domain-annotated columns in spec"
+    skipped_per_col = sum(
+        1
+        for f in r.findings
+        if f.status == "SKIP" and f.check.startswith("domain:") and f.check != "domain"
+    )
+    failed_per_col = sum(
+        1
+        for f in r.findings
+        if f.status == "FAIL" and f.check.startswith("domain:")
+    )
+    checked = n - skipped_per_col
+    if r.failure_count:
+        return (
+            f"{checked} of {n} domain-annotated col(s) checked, "
+            f"{failed_per_col} with domain mismatches"
+        )
+    if skipped_per_col:
+        return (
+            f"{checked} of {n} domain-annotated col(s) checked "
+            f"({skipped_per_col} skipped per Layer 1), all conform"
+        )
+    return f"{n} domain-annotated col(s) checked, all conform"
+
+
+def _layer5_line(cols: list[ColSpec], r: LayerResult) -> str:
+    notnull_cols = [c for c in cols if not c.nullable]
+    n = len(notnull_cols)
+    if n == 0:
+        return "no NOT NULL columns in spec"
+    if any(f.status == "SKIP" and f.check == "not_null" for f in r.findings):
+        return "table missing (skipped)"
+    skipped_per_col = sum(
+        1
+        for f in r.findings
+        if f.status == "SKIP"
+        and f.check.startswith("not_null:")
+        and f.check != "not_null"
+    )
+    failed_per_col = sum(
+        1
+        for f in r.findings
+        if f.status == "FAIL" and f.check.startswith("not_null:")
+    )
+    checked = n - skipped_per_col
+    if r.failure_count:
+        return (
+            f"{checked} of {n} NOT NULL col(s) checked, "
+            f"{failed_per_col} with NULL violations"
+        )
+    if skipped_per_col:
+        return (
+            f"{checked} of {n} NOT NULL col(s) checked "
+            f"({skipped_per_col} skipped per Layer 1), 0 NULL violations"
+        )
+    return f"{n} NOT NULL col(s) checked, 0 NULL violations"
+
+
+def _format_summary(cols: list[ColSpec], results: list[LayerResult]) -> str:
+    """Compose the multi-line Summary block printed at the end of a run.
+
+    Surfaces per-layer counts (columns expected/checked/skipped/failed)
+    and Layer 5's row-count denominator. On FAIL, names which layers
+    failed by number and appends the runbook trailer pointing customers
+    at Section 8 'Validation Failures (Post-Pipeline)'. The block opens
+    with ``Summary: OK`` or ``Summary: FAILED`` so existing scripts that
+    grep those anchors continue to work.
+
+    Counts derive from data the layer functions already collect:
+      * column universes from ``cols`` (spec)
+      * skipped/failed per-layer from ``LayerResult.findings`` check
+        identifiers (e.g. ``concept_fk:gender_concept_id``)
+      * total rows from ``LayerResult.total_rows`` (Layer 5 only)
+
+    Standard-resolved rate (Layer 3) is intentionally not surfaced —
+    Layer 3 currently checks existence in reference.concept but not the
+    standard_concept flag; reporting a rate would require new SQL and
+    is bookmarked as a v2.0.7 candidate.
+    """
+    r1, r2, r3, r4, r5 = results
+    failed_layers = [i + 1 for i, r in enumerate(results) if r.failure_count]
+    green = 5 - len(failed_layers)
+
+    if failed_layers:
+        failed_names = ", ".join(f"layer-{i}" for i in failed_layers)
+        header = f"Summary: FAILED ({green}/5 layers green; failed: {failed_names})"
+    else:
+        header = "Summary: OK (5/5 layers green)"
+
+    lines = ["", header]
+    lines.append(f"  - Layer 1 (schema):      {_layer1_line(cols, r1)}")
+    lines.append(f"  - Layer 2 (PK):          {_layer2_line(cols, r2)}")
+    lines.append(f"  - Layer 3 (FK concepts): {_layer3_line(cols, r3)}")
+    lines.append(f"  - Layer 4 (domain):      {_layer4_line(cols, r4)}")
+    lines.append(f"  - Layer 5 (NOT NULL):    {_layer5_line(cols, r5)}")
+    if r5.total_rows is not None:
+        lines.append(f"Total rows in table: {r5.total_rows}")
+    if failed_layers:
+        lines.append(
+            "\nSee docs/omop-runbook.md Section 8 'Validation Failures "
+            "(Post-Pipeline)' for common fixes per layer."
+        )
+    return "\n".join(lines)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate an OMOP table with five layers.")
     parser.add_argument("--table", required=True, help="FQN catalog.schema.table")
@@ -138,18 +307,15 @@ def main() -> None:
 
     r1 = run_layer_1(cols, cat, sch, tbl, sql_fn)
     missing_cols = r1.missing_cols
-    failures = r1.failure_count
-    failures += run_layer_2(cols, fq, missing_cols, sql_fn).failure_count
-    failures += run_layer_3(cols, fq, concept, missing_cols, sql_fn).failure_count
-    failures += run_layer_4(cols, fq, concept, missing_cols, sql_fn).failure_count
-    failures += run_layer_5(cols, fq, missing_cols, sql_fn).failure_count
+    r2 = run_layer_2(cols, fq, missing_cols, sql_fn)
+    r3 = run_layer_3(cols, fq, concept, missing_cols, sql_fn)
+    r4 = run_layer_4(cols, fq, concept, missing_cols, sql_fn)
+    r5 = run_layer_5(cols, fq, missing_cols, sql_fn)
 
-    print(f"\nSummary: {'FAILED' if failures else 'OK'} ({failures} layer(s) failed)")
-    if failures:
-        print(
-            "\nSee docs/omop-runbook.md Section 8 'Validation Failures "
-            "(Post-Pipeline)' for common fixes per layer."
-        )
+    results = [r1, r2, r3, r4, r5]
+    failures = sum(r.failure_count for r in results)
+
+    print(_format_summary(cols, results))
     raise SystemExit(1 if failures else 0)
 
 
