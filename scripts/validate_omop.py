@@ -145,6 +145,11 @@ def main() -> None:
     failures += run_layer_5(cols, fq, missing_cols, sql_fn).failure_count
 
     print(f"\nSummary: {'FAILED' if failures else 'OK'} ({failures} layer(s) failed)")
+    if failures:
+        print(
+            "\nSee docs/omop-runbook.md Section 8 'Validation Failures "
+            "(Post-Pipeline)' for common fixes per layer."
+        )
     raise SystemExit(1 if failures else 0)
 
 
