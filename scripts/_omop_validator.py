@@ -74,15 +74,22 @@ class Finding:
 class LayerResult:
     """Return type for ``run_layer_1`` through ``run_layer_5``.
 
-    ``failure_count`` is the only field the CLI consumes; ``findings``
-    is the structured surface for the notebook (and any future
-    non-CLI consumer); ``missing_cols`` is Layer 1's hand-off to
-    Layers 3, 4, 5 (empty for layers 2-5).
+    ``failure_count`` is the field the CLI's pass/fail accumulator
+    consumes; ``findings`` is the structured surface for the notebook
+    (and any future non-CLI consumer); ``missing_cols`` is Layer 1's
+    hand-off to Layers 3, 4, 5 (empty for layers 2-5); ``total_rows``
+    is Layer 5's exposed denominator from its ``SELECT COUNT(*) FROM
+    {fq}`` query (None for layers 1-4 since they don't count rows;
+    None for Layer 5 when the table-missing short-circuit fires
+    before the row count is computed). Surfaced in the CLI's enriched
+    Summary block (v2.0.6 stream 2 commit 2); the notebook validator
+    consumes findings only and ignores total_rows.
     """
 
     failure_count: int
     findings: list[Finding] = field(default_factory=list)
     missing_cols: set[str] = field(default_factory=set)
+    total_rows: int | None = None
 
 
 def _norm_type(t: str) -> str:
@@ -592,7 +599,7 @@ def run_layer_5(
                     message=line,
                 )
             )
-        return LayerResult(failure_count=1, findings=findings)
+        return LayerResult(failure_count=1, findings=findings, total_rows=total)
     suffix = " (some skipped per Layer 1)" if skipped else ""
     print(f"PASS: required (non-nullable) columns have no NULLs{suffix}.")
     findings.append(
@@ -603,4 +610,4 @@ def run_layer_5(
             message=f"required (non-nullable) columns have no NULLs{suffix}",
         )
     )
-    return LayerResult(failure_count=0, findings=findings)
+    return LayerResult(failure_count=0, findings=findings, total_rows=total)

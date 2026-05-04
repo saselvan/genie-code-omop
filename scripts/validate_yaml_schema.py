@@ -248,6 +248,11 @@ def main() -> int:
             f"{len(e.errors())} validation error(s):\n{_format_errors(e)}",
             file=sys.stderr,
         )
+        print(
+            "\nSee docs/omop-runbook.md Section 8 'Config Validation Errors "
+            "(Pydantic)' for common fixes per error type.",
+            file=sys.stderr,
+        )
         return 1
     except Exception as e:  # pragma: no cover — unexpected
         print(f"UNEXPECTED ERROR: {type(e).__name__}: {e}", file=sys.stderr)
