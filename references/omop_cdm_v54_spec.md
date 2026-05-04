@@ -147,6 +147,7 @@ For borderline cases where the principle's application is genuinely ambiguous (e
 | visit_detail_id | BIGINT | Y | N | visit_detail.visit_detail_id | |
 | procedure_source_value | STRING | Y | N | | |
 | procedure_source_concept_id | INT | Y | N | concept.concept_id | |
+| modifier_source_value | STRING | Y | N | | |
 
 ## drug_exposure
 
@@ -278,7 +279,7 @@ For borderline cases where the principle's application is genuinely ambiguous (e
 | note_title | STRING | Y | N | | |
 | note_text | STRING | N | N | | |
 | encoding_concept_id | INT | N | N | concept.concept_id | |
-| language_concept_id | INT | N | N | concept.concept_id | |
+| language_concept_id | INT | N | N | concept.concept_id | Language |
 | provider_id | BIGINT | Y | N | provider.provider_id | |
 | visit_occurrence_id | BIGINT | Y | N | visit_occurrence.visit_occurrence_id | |
 | visit_detail_id | BIGINT | Y | N | visit_detail.visit_detail_id | |
@@ -336,6 +337,8 @@ For borderline cases where the principle's application is genuinely ambiguous (e
 | state | STRING | Y | N | | |
 | zip | STRING | Y | N | | |
 | county | STRING | Y | N | | |
+| location_source_value | STRING | Y | N | | |
+| country_concept_id | INT | Y | N | concept.concept_id | Geography |
 | country_source_value | STRING | Y | N | | |
 | latitude | FLOAT | Y | N | | |
 | longitude | FLOAT | Y | N | | |
