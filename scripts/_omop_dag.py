@@ -13,8 +13,12 @@ The build DAG covers 14 of the 20 tables in
 validation-only per AD-001 — customers bring their own ETL for these
 tables, and `validate_omop` checks them against the spec on
 customer-built data. Callers asking the DAG about these tables
-(via `direct_predecessors` or `topological_sort`) get `KeyError`,
-which is the documented contract for "not buildable by this DAG."
+(via `direct_predecessors`, `topological_sort`, or
+`transitive_predecessors`) get `BuildScopeError` carrying a
+user-actionable AD-001 message. `BuildScopeError` inherits from
+`KeyError`, so existing ``except KeyError`` callers continue to
+catch it transparently; new callers can ``except BuildScopeError``
+to distinguish "not buildable per AD-001" from other KeyErrors.
 
 Auth boilerplate not applicable (pure-Python module, no SDK calls).
 
@@ -30,6 +34,34 @@ is built.
 """
 
 from __future__ import annotations
+
+
+class BuildScopeError(KeyError):
+    """Raised when a table is in the OMOP CDM v5.4 spec but not in
+    the build DAG.
+
+    Per AD-001, the skill validates 20 tables and auto-builds 14;
+    the other 6 (``visit_detail``, ``device_exposure``, ``note``,
+    ``note_nlp``, ``specimen``, ``dose_era``) are validation-only
+    via the BYO-ETL pattern. Inherits from ``KeyError`` so existing
+    ``except KeyError`` callers continue to catch it transparently.
+    """
+
+
+def _raise_buildscope_error(table: str) -> None:
+    """Raise a ``BuildScopeError`` with the canonical AD-001 message.
+
+    Single source of truth for the error text raised by every
+    DAG-lookup helper in this module. Keeps the customer-facing
+    message identical regardless of which entry point the caller hit.
+    """
+    raise BuildScopeError(
+        f"{table!r} is in the OMOP CDM v5.4 spec but not in the build "
+        f"DAG. Per AD-001, this table is validation-only — bring your "
+        f"own ETL for it. See docs/omop-runbook.md Section 7.5 "
+        f"'BYO-ETL: validation-only tables' for the BYO-ETL pattern."
+    )
+
 
 # Direct dependencies per OMOP CDM v5.4 build DAG.
 # Round 1 tables (no deps) appear with empty lists.
@@ -61,8 +93,13 @@ def direct_predecessors(table: str) -> list[str]:
     Returns a fresh list (caller-mutation safe).
 
     Raises:
-        KeyError: if `table` is not in the DAG.
+        BuildScopeError: if `table` is not in the build DAG (per
+            AD-001, the table is validation-only). Inherits from
+            `KeyError` for backward compatibility with
+            ``except KeyError`` callers.
     """
+    if table not in DAG:
+        _raise_buildscope_error(table)
     return list(DAG[table])
 
 
@@ -76,7 +113,9 @@ def topological_sort(tables: set[str]) -> list[str]:
     are simultaneously ready.
 
     Raises:
-        KeyError: if any table in the input is not in the DAG.
+        BuildScopeError: if any table in the input is not in the
+            build DAG (per AD-001, the table is validation-only).
+            Inherits from `KeyError` for backward compatibility.
         ValueError: if a cycle is detected. Cannot happen given DAG is
             fixed and acyclic, but defensive against future DAG edits.
     """
@@ -84,7 +123,8 @@ def topological_sort(tables: set[str]) -> list[str]:
         return []
 
     for t in tables:
-        _ = DAG[t]
+        if t not in DAG:
+            _raise_buildscope_error(t)
 
     in_degree: dict[str, int] = {t: 0 for t in tables}
     for t in tables:
@@ -116,10 +156,12 @@ def transitive_predecessors(table: str) -> set[str]:
         include `table` itself). Returns `set()` for round-1 tables.
 
     Raises:
-        KeyError: if `table` is not in the DAG.
+        BuildScopeError: if `table` is not in the build DAG (per
+            AD-001, the table is validation-only). Inherits from
+            `KeyError` for backward compatibility.
     """
     if table not in DAG:
-        raise KeyError(table)
+        _raise_buildscope_error(table)
 
     result: set[str] = set()
     stack = list(DAG[table])
