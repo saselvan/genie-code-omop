@@ -1,8 +1,6 @@
 """Shared warehouse ID resolution for skill scripts.
 
-Strict superset of the pre-deletion ``_resolve_warehouse_id`` helper from
-``validate_omop.py`` (see ``e20c834~1``). Same behavior, broader signature:
-adds ``profile`` (for local dev fresh-client construction) and ``client``
+Accepts ``profile`` (for local dev fresh-client construction) and ``client``
 (for client injection in tests and to avoid double-constructing
 ``WorkspaceClient`` when the caller already has one).
 """
@@ -51,26 +49,19 @@ def resolve_warehouse_id(
             paths. Message names ``--warehouse-id``,
             ``DATABRICKS_WAREHOUSE_ID``, and the start-a-warehouse
             remediation so the caller can act without consulting docs.
-            Message text is preserved verbatim from the pre-deletion
-            inline helper because ``recommended_ci_config.md`` and the
-            v2.0.3 rehearsal acceptance matrix both expect to see this
-            exact wording.
+            Message text is intentionally stable — ``recommended_ci_config.md``
+            documents this exact wording so customers grepping for the failure
+            message in CI logs find consistent text.
 
     Behavior contract — why no "any running" fallback:
-        The pre-deletion helper required running-AND-serverless and
-        raised otherwise. The earlier ``_warehouse.py`` (zero callers
-        before v2.0.3) had a "fall back to any running warehouse"
-        path. We preserve the pre-deletion semantics, not the earlier
-        ``_warehouse.py`` semantics, because:
+        The helper requires running-AND-serverless and raises otherwise.
+        We do NOT fall back to a non-serverless warehouse, because:
           1. The ``SystemExit`` message names "serverless" — silently
              returning a non-serverless warehouse would make that
              message misleading in the failure case.
           2. ``recommended_ci_config.md`` documents the validator as
              serverless-warehouse-driven; falling back to non-serverless
              would be an undocumented behavior expansion.
-          3. ``_warehouse.py`` had zero callers before v2.0.3, so
-             tightening to pre-deletion semantics breaks no current
-             caller.
     """
     if explicit:
         return explicit

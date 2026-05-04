@@ -16,9 +16,9 @@ architecture conventions, core from OHDSI / OMOP CDM naming. See
 ``templates/project_scaffold/docs/omop-runbook.md`` Appendix D
 Glossary for the dual-vocabulary rationale.
 
-Decision 7: re-read on every invocation. No manifest, no caching.
-Decision 10: Git-backed bundles are the recommended default; Git status is
-part of state. Decision 12: this module does not deploy.
+Re-reads on every invocation. No manifest, no caching.
+Git-backed bundles are the recommended default; Git status is
+part of state. This module does not deploy.
 
 CLI is a developer-loop tool. Programmatic callers (`classify_request`,
 the update workflow) should use ``read_bundle_state()`` directly.
@@ -371,7 +371,7 @@ def read_bundle_state(
     data. Raises ``ValueError`` only for ``project_path`` that doesn't
     exist or isn't a directory.
 
-    Decision 7: re-reads from disk on every call. No caching.
+    Re-reads from disk on every call. No caching.
     """
     project = Path(project_path)
     if not project.exists():

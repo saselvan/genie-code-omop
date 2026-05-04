@@ -35,8 +35,6 @@ DAG lookups in `scripts/_omop_dag.py` against non-buildable tables now raise a t
 - The 5-layer validator structure is unchanged. Layer 1-5 evaluate your data the same way as v2.0.5; only the Summary output's shape changed.
 - The Pydantic config schema (`validate_yaml_schema.py`) is unchanged — your existing `configs/<table>.yaml` files validate identically; only the FAIL output adds a trailer.
 
-For the full v2.0.6 cycle context, see the skill repo's `BACKLOG.md` and `SESSION-STATE.md` v2.0.6 entry.
-
 ## v2.0.5 (2026-05-03)
 
 ### Validator behavior changes
@@ -63,5 +61,3 @@ If your `note` data populates `encoding_concept_id` with concepts outside the Me
 
 - The 14-buildable / 20-validatable scope split (architectural decision AD-001) is unchanged. The skill builds the same 14 tables it built in v2.0.4; the same 6 BYO-ETL tables remain validation-only.
 - The 5-layer validator structure is unchanged (Layer 1 Schema, Layer 2 PK, Layer 3 FK concepts, Layer 4 Domain, Layer 5 NOT NULL). The behavior changes above are encoded in the spec data the validator reads, not in new validator logic.
-
-For the full v2.0.5 cycle context, see the skill repo's `BACKLOG.md` and `SESSION-STATE.md` v2.0.5 entry.

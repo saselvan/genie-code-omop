@@ -10,7 +10,7 @@ Do not litigate existing entries; if you believe a past decision was wrong, file
 
 ## Decisions
 
-### DC-010: note.note_class_concept_id
+### note.note_class_concept_id
 
 - **Column:** `note.note_class_concept_id`
 - **OHDSI reference:** [cdm54.html#note](https://ohdsi.github.io/CommonDataModel/cdm54.html#note)
@@ -19,4 +19,3 @@ Do not litigate existing entries; if you believe a past decision was wrong, file
 - **Tension:** The Athena URL parameter `domain=Meas+Value` is a single-Domain anchor — but it appears only inside the URL, never in the prose narrative as a Domain string. The prose itself names "HL7 LOINC Document Type Vocabulary classification" (a vocabulary classification, not a Domain string). Two reasonable contributors could weight the URL evidence vs the prose evidence differently under the encoding principle, and reach different `Domain` decisions.
 - **Decision:** `Domain` blank.
 - **Reasoning:** This is a new category not directly named by the principle preamble's examples — the preamble's named cases cover narrative-passing-mention, polymorphic-FK, and explicit-table-cell patterns; it does not currently anticipate "Domain string appears only as a parameter inside a narrative-embedded URL." The principle's blank-because-ambiguous *spirit* applies: the URL parameter `domain=Meas+Value` is embedded inside an Athena query URL within the narrative rather than asserted as a Domain string in prose, and treating URL parameters as prose-equivalent is a stretch the preamble does not authorize. The conservative reading (blank) stays inside what OHDSI explicitly says in prose. Encoding `Meas Value` would also be defensible if URL parameters are treated as prose-equivalent — that is the borderline. If similar URL-parameter-without-prose-Domain-mention findings surface in future audits, the preamble's examples list may need a fifth named case ("Domain string appears only as a parameter inside a narrative-embedded Athena URL"); a single occurrence is not yet evidence for that broadening.
-- **Reviewer:** DC-010 from the v2.0.4 Lens 5 audit ([`reviews/v2.0.4-lens5-dc.md`](../../../../reviews/v2.0.4-lens5-dc.md)); decision recorded during v2.0.5 stream 2 Commit 4b after the AskQuestion-no-response incident closeout described in `SESSION-STATE.md`.

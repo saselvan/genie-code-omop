@@ -5,8 +5,9 @@ Auth is handled by Databricks runtime when invoked from Genie Code Agent.
 --profile only applies for local development against ~/.databrickscfg.
 
 This script is the CLI orchestrator. Spec parsing and the 5 layer-check
-functions live in ``_omop_validator`` so the notebook validator (Commit 2
-of v2.0.4c) consumes the same logic.
+functions live in ``_omop_validator`` so the notebook validator
+(``templates/project_scaffold/src/99_validate_omop_output.py``)
+consumes the same logic.
 """
 
 from __future__ import annotations
@@ -222,7 +223,7 @@ def _format_summary(cols: list[ColSpec], results: list[LayerResult]) -> str:
     Standard-resolved rate (Layer 3) is intentionally not surfaced —
     Layer 3 currently checks existence in reference.concept but not the
     standard_concept flag; reporting a rate would require new SQL and
-    is bookmarked as a v2.0.7 candidate.
+    is a known followup.
     """
     r1, r2, r3, r4, r5 = results
     failed_layers = [i + 1 for i, r in enumerate(results) if r.failure_count]

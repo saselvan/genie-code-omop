@@ -667,7 +667,7 @@ Click **Run All**.
 
 Navigate to **Catalog Explorer** → `{catalog}` → `core_omop` → `person` → **Lineage** tab. You should see:
 
-- Column-level lineage from `{bronze_schema}.patient` (e.g., `bronze_caboodle.patient`) → `core_omop.person`
+- Column-level lineage from `{bronze_schema}.patient` (e.g., `bronze_clinical.patient`) → `core_omop.person`
 - The vocabulary reference tables (`reference.concept`, `reference.source_to_concept_map`) as upstream dependencies
 - Every column in `core_omop.person` traced back to its source expression
 
@@ -745,8 +745,6 @@ Three patterns cover the most common BYO-ETL data sources:
 #### Why this asymmetry exists
 
 OMOP CDM v5.4 spec coverage is the conformance test surface; build coverage is the engineering surface. The 6 BYO-ETL tables are real OHDSI v5.4 clinical tables — the spec must include them so customers who do build them get conformance checks. The build surface is narrower because templating ETL for clinical devices, NLP outputs, or specimen tracking would produce code that doesn't match any specific customer's data shape. Customer ETL plus skill validation is the right contract.
-
-For the architectural rationale, search `AD-001` in the skill repo's `BACKLOG.md`.
 
 ---
 

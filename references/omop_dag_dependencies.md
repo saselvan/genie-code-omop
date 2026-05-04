@@ -53,11 +53,11 @@ The following 6 OMOP CDM v5.4 tables are in [`omop_cdm_v54_spec.md`](./omop_cdm_
 - `note` — clinical note text; the build path needs an upstream extract from the EHR notes store
 - `note_nlp` — NLP-derived structured terms from `note`; requires a separate NLP pipeline (e.g., cTAKES, Spark NLP, an LLM extractor)
 - `specimen` — specimen / sample collection; sourced from lab and pathology system extracts
-- `dose_era` — third era table; populated by SQL roll-up of `drug_exposure` analogous to `condition_era` / `drug_era`, but no canonical SQL ships in this skill yet (see DC-008 in `BACKLOG.md` for the era-table YAML-shape followup)
+- `dose_era` — third era table; populated by SQL roll-up of `drug_exposure` analogous to `condition_era` / `drug_era`, but no canonical SQL ships in this skill yet (era-table YAML shape is a known followup; track via this repo's GitHub issues)
 
 The validator's coverage of these BYO-ETL tables is the same as for the 14 build-scope tables: schema (Layer 1), PK uniqueness (Layer 2), concept FKs (Layer 3), domain conformance (Layer 4), and NOT NULL checks (Layer 5) per [`omop_cdm_v54_spec.md`](./omop_cdm_v54_spec.md).
 
-This is the AD-001 architectural decision: the spec is the conformance contract for all 20 tables; the build DAG is the production path for the 14 tables a typical from-EHR-bronze pipeline builds end-to-end. v2.0.4a expanded spec coverage from 14 to 20 tables to make the validator-side coverage uniform; the build path stayed at 14 because expanding it without a customer-driven need would impose a build pattern that doesn't match the partial-source-coverage case.
+This is the AD-001 architectural decision: the spec is the conformance contract for all 20 tables; the build DAG is the production path for the 14 tables a typical from-EHR-bronze pipeline builds end-to-end. The spec covers 20 tables to make the validator-side coverage uniform; the build path stays at 14 because expanding it without a customer-driven need would impose a build pattern that doesn't match the partial-source-coverage case.
 
 ## Out of scope (no validator coverage)
 
@@ -67,8 +67,8 @@ The following OMOP CDM v5.4 tables are NOT in [`omop_cdm_v54_spec.md`](./omop_cd
 - `fact_relationship` — research-tier, defer until needed
 - `episode`, `episode_event` — research-tier
 
-If your research scope adds these, the spec must grow first (a v2.0.4a-shaped fidelity expansion) before any build or validator work makes sense.
+If your research scope adds these, the spec must grow first (a fidelity expansion against OHDSI v5.4) before any build or validator work makes sense.
 
 ## Reference
 
-Canonical example: [`resources/jobs.yml`](../../../../resources/jobs.yml) — the active OMOP DAG with Round 1 dimensions, Round 2 visit_occurrence, and 13 placeholder tasks (commented out) showing the full dependency shape for Rounds 3 and 4. (This relative link only resolves inside the OMOP repo clone — when viewing the skill from `/Workspace/.assistant/skills/`, open `resources/jobs.yml` in your repo directly.)
+Canonical example: [`templates/project_scaffold/resources/jobs.yml`](../templates/project_scaffold/resources/jobs.yml) — the active OMOP DAG template with Round 1 dimensions, Round 2 `visit_occurrence`, and 13 placeholder tasks (commented out) showing the full dependency shape for Rounds 3 and 4.

@@ -11,8 +11,8 @@ informational input to the response template — telling the engineer
 from X to Y" is much more reviewable than "we rewrote the whole
 file."
 
-Decision 9 (textual-vs-structural): this module is the structural
-side. The skill never produces a textual line-diff because the
+Textual-vs-structural: this module is the structural side. The
+skill never produces a textual line-diff because the
 agent regenerates the WHOLE config — line-by-line comparison
 against an LLM-rewritten file produces noise that overwhelms the
 real changes. Structural diff via the Pydantic model levels the

@@ -409,7 +409,7 @@ the same logic applies:
   validation.
 - Do **NOT** run `databricks bundle deploy` — the skill does not
   deploy, and CI is not the right place to deploy production OMOP
-  pipelines (Decision 12 in the v2.0 architecture log).
+  pipelines.
 - Do **NOT** run `scripts/run_pipeline.py` — that's a developer-
   loop tool, not a CI tool.
 
@@ -524,8 +524,8 @@ team's call.
 
 ## What about declining validation?
 
-Decision 14 in the v2.0 architecture log: **validation is offered
-prominently; declining is the engineer's call.** The skill records
+By design: **validation is offered prominently; declining is the
+engineer's call.** The skill records
 the offer-and-decline in the conversation but does not enforce.
 Your team's deploy policy decides whether declining validation is
 acceptable for production.

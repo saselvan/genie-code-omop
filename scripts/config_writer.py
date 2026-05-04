@@ -8,14 +8,16 @@ this module. ``write_config`` is the single shared write surface for the
 Update and Replace sub-paths; the Generate sub-path (greenfield) writes
 through this same surface with ``overwrite=False``.
 
-Decision 9: writes the WHOLE regenerated config — never a textual diff.
-Decision 10: VCS-agnostic. The writer issues only **read-only** git
-probes (``git rev-parse`` / ``git status``) for surfacing
+Writes the WHOLE regenerated config — never a textual diff.
+
+VCS-agnostic. The writer issues only **read-only** git probes
+(``git rev-parse`` / ``git status``) for surfacing
 ``WriteResult.git_warning``; it never mutates the repository state
 and never blocks the write on git results. The engineer commits
 through their own workflow.
-Decision 11: agent writes, engineer commits. The writer does not
-``git add``, ``git commit``, or any other git mutation.
+
+Agent writes, engineer commits. The writer does not ``git add``,
+``git commit``, or any other git mutation.
 
 This file ships the Step 1 + 2 + 3 + 4 surface:
   - greenfield write (file does not exist)

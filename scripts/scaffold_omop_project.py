@@ -10,8 +10,9 @@ The scaffolder builds 14 of the 20 OMOP CDM v5.4 tables that
 ``validate_omop.py`` checks. The other 6 (``visit_detail``, ``device_exposure``,
 ``note``, ``note_nlp``, ``specimen``, ``dose_era``) are validation-only —
 the skill validates them against the spec but does not template ETL for
-them (architectural decision AD-001; see ``BACKLOG.md`` and the scaffolded
-``docs/omop-runbook.md`` Section 7.5 'BYO-ETL: validation-only tables').
+them (architectural decision AD-001; see the scaffolded
+``docs/omop-runbook.md`` Section 7.5 'BYO-ETL: validation-only tables'
+for the rationale and BYO-ETL loading patterns).
 
 Called from Step 1 of the omop-pipeline-builder workflow. The agent collects
 parameters conversationally and invokes scaffold_project() directly; this module
@@ -50,21 +51,21 @@ TEMPLATES_DIR = (
 
 # Shared validator module copied into the customer's <target>/src/ alongside
 # the notebook (see _copy_shared_module). Single-source-of-truth: the
-# validator lives here in scripts/ exactly once; v2.0.4c Commit 2's notebook
-# rewrite imports `from _omop_validator import ...`, which only resolves at
-# customer runtime if the scaffolder put a copy of this file next to the
+# validator lives here in scripts/ exactly once; the customer-facing
+# notebook imports `from _omop_validator import ...`, which only resolves
+# at customer runtime if the scaffolder put a copy of this file next to the
 # notebook in the customer's deployed src/.
 SHARED_VALIDATOR_PATH = Path(__file__).resolve().parent / "_omop_validator.py"
 
 # OMOP CDM v5.4 spec markdown copied into the customer's <target>/src/ alongside
 # the notebook and the shared validator module (see _copy_shared_spec).
-# Single-source-of-truth: the spec lives in references/ exactly once; v2.0.4c
-# Commit 2's notebook calls parse_omop_spec_md(spec_text), which requires the
-# spec markdown be reachable from the notebook at customer runtime. Mirror of
-# SHARED_VALIDATOR_PATH's pattern; helpers kept separate from
-# _copy_shared_module rather than generalized so each commit stays
-# single-purpose (v2.0.5 candidate to consider unification once a third
-# shared-file pattern emerges).
+# Single-source-of-truth: the spec lives in references/ exactly once; the
+# customer-facing notebook calls parse_omop_spec_md(spec_text), which
+# requires the spec markdown be reachable from the notebook at customer
+# runtime. Mirror of SHARED_VALIDATOR_PATH's pattern; helpers kept separate
+# from _copy_shared_module rather than generalized — each shared-file pattern
+# carries its own semantics, and unification awaits a third pattern that
+# shows the right shared abstraction.
 SHARED_SPEC_PATH = (
     Path(__file__).resolve().parent.parent / "references" / "omop_cdm_v54_spec.md"
 )
@@ -130,8 +131,9 @@ def _default_bronze_target(volume_target: str) -> str:
     """Derive a `<CHANGEME>`-flagged default bronze_target from volume_target.
 
     Unlike `_default_core_target`, there is no safe inferable bronze schema —
-    bronze schemas come from the customer's EHR landing zone (Caboodle,
-    Clarity, Lakeflow Connect, etc.) and the scaffolder cannot guess it.
+    bronze schemas come from the customer's EHR ingest layer (which
+    varies by source vendor and ingest tool) and the scaffolder cannot
+    guess it.
 
     Failure mode if the customer ships the placeholder unchanged:
         - `databricks bundle validate -t production` returns "Validation OK!"
@@ -341,8 +343,8 @@ def _render_readme(
         f"`bronze_target` defaulted to `{bronze_target}`. Replace "
         "`<CHANGEME — your bronze schema>` in `databricks.yml`'s "
         "`bronze_schema.default` with the actual schema where your EHR "
-        "landing-zone tables live (e.g., `bronze_caboodle`, `bronze_clarity`, "
-        "`bronze_lakeflow`). **`databricks bundle validate` will NOT catch "
+        "landing-zone tables live (e.g., `bronze_clinical`, `bronze_ehr`, "
+        "`bronze_landing`). **`databricks bundle validate` will NOT catch "
         "this** — it checks YAML structure, not variable values. The "
         "pipeline run will fail with the literal `<CHANGEME>` string in the "
         "error message.\n"
@@ -657,7 +659,7 @@ def _copy_shared_module(src_file: Path, dst_dir: Path) -> int:
     count). Raises ``FileNotFoundError`` if ``src_file`` doesn't exist —
     the skill package is broken if the shared module is missing, and
     silently scaffolding an incomplete customer project would break
-    Commit 2's notebook at runtime in mysterious ways.
+    the customer-facing notebook at runtime in mysterious ways.
     """
     if not src_file.exists():
         raise FileNotFoundError(
@@ -682,15 +684,14 @@ def _copy_shared_spec(src_file: Path, dst_dir: Path) -> int:
     Sibling helper to ``_copy_shared_module`` rather than a generalized
     multi-file copier because each shared-file pattern carries its own
     semantic (validator = code single-source-of-truth; spec = data
-    single-source-of-truth) and conflating them now would couple their
-    lifecycles. v2.0.5 candidate to consider unification once a third
-    shared-file pattern emerges.
+    single-source-of-truth) and     conflating them now would couple their lifecycles — unification awaits
+    a third shared-file pattern that shows the right shared abstraction.
 
     Returns 1 on success (parallel to ``_copy_shared_module``'s file count).
     Raises ``FileNotFoundError`` if ``src_file`` doesn't exist — the skill
     package is broken if the spec is missing, and silently scaffolding an
-    incomplete customer project would break Commit 2's notebook at runtime
-    in mysterious ways.
+    incomplete customer project would break the customer-facing notebook
+    at runtime in mysterious ways.
     """
     if not src_file.exists():
         raise FileNotFoundError(
@@ -784,7 +785,7 @@ def _cli() -> None:
         default=None,
         help=(
             "Two-part UC name: catalog.schema. The schema where your EHR "
-            "landing-zone tables live (e.g. cat.bronze_caboodle). Defaults "
+            "landing-zone tables live (e.g. cat.bronze_clinical). Defaults "
             "to a <CHANGEME>-flagged placeholder you must edit before "
             "running the pipeline."
         ),

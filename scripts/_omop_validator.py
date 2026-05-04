@@ -1,7 +1,7 @@
 """Shared OMOP CDM validation logic — spec parser + five layer-check functions.
 
-Consumed by ``scripts/validate_omop.py`` (the CLI) and (after v2.0.4c
-Commit 2) ``templates/project_scaffold/src/99_validate_omop_output.py``
+Consumed by ``scripts/validate_omop.py`` (the CLI) and
+``templates/project_scaffold/src/99_validate_omop_output.py``
 (the notebook). Both surfaces invoke the same parser and layer functions
 against the same OMOP CDM v5.4 spec markdown, so a customer's result on
 the notebook matches the CLI's result on the same table.
@@ -15,10 +15,11 @@ surface) and return a ``LayerResult`` carrying:
     from the actual table; consumed by Layers 3, 4, 5 to skip
     UNRESOLVED_COLUMN-prone per-column SQL
 
-The structured ``findings`` were added in v2.0.4c Commit 1.5 so the
-notebook (Commit 2) can populate a Spark DataFrame without parsing
-the CLI's stdout. The CLI ignores ``findings`` and consumes only
-``failure_count``; print output remains byte-identical to v2.0.4b.
+Structured ``findings`` exist so the notebook can populate a Spark
+DataFrame without parsing the CLI's stdout. The CLI ignores
+``findings`` and consumes only ``failure_count``; the CLI's print
+output is byte-stable across minor versions (Layer 5's behavior
+change in v2.0.5 is the documented exception — see CHANGELOG).
 
 Layer functions take a ``sql_fn: SqlFn`` callable and never construct
 or use a ``WorkspaceClient`` directly — the CLI orchestrator builds
@@ -82,8 +83,8 @@ class LayerResult:
     {fq}`` query (None for layers 1-4 since they don't count rows;
     None for Layer 5 when the table-missing short-circuit fires
     before the row count is computed). Surfaced in the CLI's enriched
-    Summary block (v2.0.6 stream 2 commit 2); the notebook validator
-    consumes findings only and ignores total_rows.
+    Summary block; the notebook validator consumes findings only and
+    ignores total_rows.
     """
 
     failure_count: int
@@ -315,13 +316,8 @@ def run_layer_2(
     as a Spark traceback rather than a customer-actionable finding. The
     partial-PK-drift case (some PK cols present, some not) still fires
     the query — that combination doesn't fit Layer 2's cross-row shape
-    and is a v2.0.5 candidate (rare in OMOP, where most tables have
+    and is a known followup (rare in OMOP, where most tables have
     single-column PKs).
-
-    Closes the deferred Layer 2 coupling fix from v2.0.4b
-    (``run_layer_2``'s previous docstring named the deferral and v2.0.4c
-    Commit 3 pre-flight surfaced the missing-table failure mode against
-    a partially-built customer catalog).
     """
     print("== Layer 2: primary key uniqueness ==")
     findings: list[Finding] = []

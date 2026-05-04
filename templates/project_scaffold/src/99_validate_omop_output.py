@@ -1,6 +1,6 @@
 """Five-layer OMOP CDM validation against the shared spec.
 
-After v2.0.4c Commit 2 this notebook delegates all validation logic to
+This notebook delegates all validation logic to
 ``_omop_validator.py`` — the shared module the CLI (``validate_omop.py``)
 also uses — so notebook findings on a given workspace table match CLI
 findings on the same table. Both the shared module and the OMOP CDM v5.4
@@ -9,18 +9,11 @@ spec markdown are scaffolded next to this notebook in the customer's
 ``_copy_shared_spec`` in ``scripts/scaffold_omop_project.py``).
 
 Set widgets (``catalog``, ``core_schema``, ``ref_schema``), then run.
-Validates every table the OMOP CDM v5.4 spec covers (after v2.0.4c
-Commit 3, that is all 20 spec-covered tables — Commit 3 replaced the
-hardcoded 2-table ``TABLES`` list with ``sorted(spec_map)`` iteration).
+Validates every table the OMOP CDM v5.4 spec covers — currently all 20
+spec-covered tables, iterated via ``sorted(spec_map)``.
 Tables present in the spec but missing from the customer's catalog
 produce a clean ``schema:table_missing`` finding from Layer 1 plus
-per-layer SKIPs (verified end-to-end by v2.0.4c Commit 2.5's
-device_exposure probe); they do not raise tracebacks.
-
-The pre-Commit-2 notebook accepted a ``table`` widget that selected a
-single table per invocation. That widget was dropped in Commit 2; the
-spec-driven iteration in Commit 3 makes per-invocation table selection
-semantically meaningless (every spec table is checked unconditionally).
+per-layer SKIPs; they do not raise tracebacks.
 
 Runs as a Databricks Python task or as a notebook (re-add a ``# Databricks
 notebook source`` header on line 1 for notebook-task semantics).
@@ -70,8 +63,8 @@ if SPEC_PATH is None:
     raise FileNotFoundError(
         f"omop_cdm_v54_spec.md not found in any of: {_SPEC_CANDIDATES}. "
         "In a scaffolded customer project the scaffolder copies the spec "
-        "into <project>/src/ alongside this notebook (see Commit 1.7). In "
-        "the skill repo it lives at <SKILL_ROOT>/references/."
+        "into <project>/src/ alongside this notebook. In the skill repo "
+        "it lives at <SKILL_ROOT>/references/."
     )
 
 try:
