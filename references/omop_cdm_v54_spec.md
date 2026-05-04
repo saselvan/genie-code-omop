@@ -158,7 +158,7 @@ For borderline cases where the principle's application is genuinely ambiguous (e
 | drug_concept_id | INT | N | N | concept.concept_id | Drug |
 | drug_exposure_start_date | DATE | N | N | | |
 | drug_exposure_start_datetime | TIMESTAMP | Y | N | | |
-| drug_exposure_end_date | DATE | Y | N | | |
+| drug_exposure_end_date | DATE | N | N | | |
 | drug_exposure_end_datetime | TIMESTAMP | Y | N | | |
 | verbatim_end_date | DATE | Y | N | | |
 | drug_type_concept_id | INT | N | N | concept.concept_id | Type Concept |
