@@ -278,7 +278,7 @@ For borderline cases where the principle's application is genuinely ambiguous (e
 | note_class_concept_id | INT | N | N | concept.concept_id | |
 | note_title | STRING | Y | N | | |
 | note_text | STRING | N | N | | |
-| encoding_concept_id | INT | N | N | concept.concept_id | |
+| encoding_concept_id | INT | N | N | concept.concept_id | Metadata |
 | language_concept_id | INT | N | N | concept.concept_id | Language |
 | provider_id | BIGINT | Y | N | provider.provider_id | |
 | visit_occurrence_id | BIGINT | Y | N | visit_occurrence.visit_occurrence_id | |
