@@ -6,8 +6,10 @@ deploy** — your CI/CD pipeline owns deploy. These snippets help you
 wire the skill's validators into the pipeline you already have.
 
 The snippets are working YAML, written for the project layout the
-skill scaffolds (see `SKILL.md` "Step 1 — Scaffold the project").
-Adjust paths if your bundle lives elsewhere.
+skill scaffolds (see the skill's `SKILL.md` at
+`.assistant/skills/omop-pipeline-builder/SKILL.md` in your deployed
+workspace, "Step 1 — Scaffold the project"). Adjust paths if your
+bundle lives elsewhere.
 
 ---
 
@@ -434,7 +436,9 @@ have. Three patterns work for production:
    `python scripts/validate_omop.py --table <catalog>.<core_schema>.<table>`
    after each deploy. Common for early-stage builds and small
    teams. Findings reviewed by the engineer; reviewer ratifies
-   each. The skill's `SKILL.md` Step 7 documents this flow.
+   each. The skill's `SKILL.md`
+   (`.assistant/skills/omop-pipeline-builder/SKILL.md` in your
+   deployed workspace) Step 7 documents this flow.
 
 2. **Workflow task.** Add a `python_wheel_task` (or notebook task)
    to your pipeline's downstream Workflow that runs `validate_omop`
@@ -447,6 +451,71 @@ have. Three patterns work for production:
    just at deploy. Pairs well with pattern 2 — pattern 2 catches
    per-deploy regressions, pattern 3 catches drift caused by
    upstream bronze-layer changes.
+
+### Differential post-deploy validation: buildable vs BYO-ETL tables
+
+`validate_omop.py` checks all 20 OMOP CDM v5.4 spec-covered tables,
+but only 14 are built by the skill's pipeline. The other 6
+(`visit_detail`, `device_exposure`, `note`, `note_nlp`, `specimen`,
+`dose_era`) are BYO-ETL — your data, your schedule (architectural
+decision AD-001; see the scaffolded `docs/omop-runbook.md`
+Section 7.5 'BYO-ETL: validation-only tables' for the full
+pattern).
+
+For CI orchestration, the validation gate fires after each
+surface lands:
+
+| Surface | When validation runs | What it catches |
+|---|---|---|
+| 14 buildable tables | After `omop_full_build` Workflow completes (the scaffolded `resources/jobs.yml`) | Layer 1 schema drift, Layer 5 NOT NULL violations from upstream changes, Layer 3 FK integrity gaps from vocabulary updates |
+| 6 BYO-ETL tables | After your separate ETL completes (Lakeflow Connect job, NLP pipeline, lab system integration) | Same 5 layers; depends on when your BYO-ETL pipeline runs |
+
+The validator surfaces don't currently support per-invocation table
+subsetting — neither `validate_omop.py --table` (single-table CLI)
+nor the scaffolded notebook (iterates all 20 spec tables) takes a
+"validate only these N tables" flag. Two practical implications:
+
+1. **Use the notebook for full-sweep validation.** Run the
+   scaffolded `src/99_validate_omop_output.py` as a Workflow
+   notebook task after both your buildable and BYO-ETL pipelines
+   have run. It iterates all 20 spec-covered tables; tables that
+   haven't been built yet (or that your BYO-ETL hasn't loaded yet)
+   short-circuit at Layer 1 with a clean `schema:table_missing`
+   finding. Subsequent layers cleanly skip — no traceback, no false
+   regression signal.
+
+2. **Use the CLI for targeted single-table validation.** Run
+   `python scripts/validate_omop.py --table <catalog>.<core_schema>.<table>`
+   when you want feedback on one table without iterating the full
+   set. This fits the developer-loop / hotfix shape; the notebook
+   surface fits the steady-state Workflow shape.
+
+Example DAG ordering for a Workflow that validates after both
+surfaces complete:
+
+```yaml
+- task_key: omop_full_build
+  # ... your skill-scaffolded build pipeline ...
+
+- task_key: byo_etl_pipeline
+  # ... your custom ETL for BYO-ETL tables ...
+
+- task_key: validate_all_omop_tables
+  depends_on:
+    - task_key: omop_full_build
+    - task_key: byo_etl_pipeline
+  notebook_task:
+    notebook_path: ${var.bundle_path}/src/99_validate_omop_output.py
+    base_parameters:
+      catalog: ${var.catalog}
+      core_schema: ${var.core_schema}
+      ref_schema: ${var.ref_schema}
+```
+
+If your BYO-ETL pipeline runs on a separate schedule from the
+skill's build, run the validation notebook after each — the
+short-circuit behavior means the validator gives you per-surface
+feedback without false alarms on the other surface.
 
 The skill ships `validate_omop.py`; orchestrating it is your
 team's call.

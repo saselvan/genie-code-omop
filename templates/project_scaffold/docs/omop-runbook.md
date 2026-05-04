@@ -288,7 +288,7 @@ Expect these differences. Every row has a concrete fix.
 | **Encounter types** | Synthetic: `Inpatient`, `Outpatient`, `Emergency`, `Observation`. Real: may be `IP`, `OP`, `ED`, etc. | `visit_concept_id` resolves to 0 | Add your encounter type codes to `source_to_concept_map` |
 | **Diagnosis types** | Synthetic: `Primary`, `Secondary`, `Admitting`. Real: may be codes or different strings | `condition_type_concept_id` CASE returns 0 | Update CASE expression in condition_occurrence config |
 | **Additional columns** | Real EHR source has 50-200 columns per table (vs 5-7 synthetic) | No breakage — opportunity for richer mapping | Optional: add to configs as needed |
-| **Missing tables** | Your EHR source may not have exact equivalents for all 8 synthetic tables | Configs for those OMOP tables need different source tables | Identify equivalent tables via schema discovery |
+| **Missing tables** | Your EHR source may not have exact equivalents for all 8 synthetic bronze source tables | Configs for those OMOP tables need different source tables | Identify equivalent tables via schema discovery |
 
 ---
 
@@ -717,6 +717,36 @@ For each new OMOP table:
 See `SKILL.md` for the complete 8-step workflow. See `references/omop_dag_dependencies.md` for the Round 1-4 dependency chart.
 
 **Always run `databricks bundle validate -t production` before deploying.**
+
+### 7.5 BYO-ETL: validation-only tables
+
+This skill builds 14 of the 20 OMOP CDM v5.4 tables that `validate_omop.py` checks. The other 6 — `visit_detail`, `device_exposure`, `note`, `note_nlp`, `specimen`, `dose_era` — are validation-only.
+
+This is architectural decision AD-001. The 14 tables this skill builds cover the OMOP coverage most projects need (person, condition_occurrence, drug_exposure, procedure_occurrence, measurement, observation, visit_occurrence, death, condition_era, drug_era, plus the dimension tables care_site, location, provider, observation_period). The 6 BYO-ETL tables require data sources too varied to template — so the skill validates them but lets you build them however fits your data.
+
+#### When you need a BYO-ETL table
+
+Three patterns cover the most common BYO-ETL data sources:
+
+**`device_exposure` (clinical device data)** — Lakeflow Connect ingests from device-tracking systems and EHR device modules; you can also build it from your own bronze tables via custom SQL/Spark. Land your data in `core_omop.device_exposure` matching the OMOP CDM v5.4 spec columns; `validate_omop.py` does the rest. Domain anchor: `device_concept_id` in the Device domain.
+
+**`note` and `note_nlp` (clinical notes and NLP-derived data)** — your NLP pipeline (OHDSI HADES, custom transformer, vendor tooling like Linguamatics or AWS Comprehend Medical) produces `note` rows from raw text and `note_nlp` rows from extracted entities. Land them in `core_omop.note` and `core_omop.note_nlp` matching the spec columns; `validate_omop.py` checks domain conformance on `language_concept_id` (Language domain), `encoding_concept_id` (Metadata domain), `note_type_concept_id` (Type Concept domain), and the NLP-side concepts.
+
+**`specimen`, `visit_detail`, `dose_era` (case-by-case)** — lab system integrations populate `specimen`. EHR sub-visit tracking (e.g., ICU admission events within an inpatient stay) populates `visit_detail`. Drug exposure roll-up at the ingredient level produces `dose_era` (similar to `drug_era` but ingredient-only — you compute it from `drug_exposure` after that pipeline runs). Each requires custom ETL; the skill validates whatever you build.
+
+#### How to use the validator on BYO-ETL tables
+
+1. Build your BYO-ETL data into `core_omop.<table_name>` via your chosen ETL.
+2. Run `python validate_omop.py --table <catalog>.core_omop.<table_name>` from the skill's `scripts/` directory (the validator runs against one table per invocation; the scaffolded `src/99_validate_omop_output.py` notebook iterates all 20 spec-covered tables in one run).
+3. For tables you've built, the validator runs all 5 layers (schema, PK uniqueness, FK integrity, domain conformance, NOT NULL completeness).
+4. For tables you haven't built yet, Layer 1 short-circuits with a `schema:table_missing` finding pointing back to this section. No traceback; subsequent layers cleanly skip.
+5. Fix any findings. Section 8 'Validation Failures (Post-Pipeline)' below has common-fix mappings.
+
+#### Why this asymmetry exists
+
+OMOP CDM v5.4 spec coverage is the conformance test surface; build coverage is the engineering surface. The 6 BYO-ETL tables are real OHDSI v5.4 clinical tables — the spec must include them so customers who do build them get conformance checks. The build surface is narrower because templating ETL for clinical devices, NLP outputs, or specimen tracking would produce code that doesn't match any specific customer's data shape. Customer ETL plus skill validation is the right contract.
+
+For the architectural rationale, search `AD-001` in the skill repo's `BACKLOG.md`.
 
 ---
 
