@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 """Scaffold a new OMOP project skeleton in a customer-chosen path.
 
-Generates a working DAB-shaped OMOP build project: bundle config, jobs DAG with
-all 14 OMOP tables as commented placeholders, src/ boilerplate copied from this
-skill's reference implementation, empty configs/ folder, seed_data template, and
-a quickstart README.
+Generates a working DAB-shaped OMOP build project: bundle config, jobs DAG
+with the 14 buildable OMOP tables (1 uncommented + 13 commented placeholders),
+src/ boilerplate copied from this skill's reference implementation, empty
+configs/ folder, seed_data template, and a quickstart README.
+
+The scaffolder builds 14 of the 20 OMOP CDM v5.4 tables that
+``validate_omop.py`` checks. The other 6 (``visit_detail``, ``device_exposure``,
+``note``, ``note_nlp``, ``specimen``, ``dose_era``) are validation-only —
+the skill validates them against the spec but does not template ETL for
+them (architectural decision AD-001; see ``BACKLOG.md`` and the scaffolded
+``docs/omop-runbook.md`` Section 7.5 'BYO-ETL: validation-only tables').
 
 Called from Step 1 of the omop-pipeline-builder workflow. The agent collects
 parameters conversationally and invokes scaffold_project() directly; this module
@@ -200,10 +207,12 @@ def _assert_consistent_catalogs(
 
     Cross-catalog OMOP builds are a real but unusual pattern (engineering and
     clinical catalogs separated for governance). The default scaffold assumes
-    a single-catalog layout, which is the dominant case. If a customer needs
-    cross-catalog, they ask explicitly and we add an `--allow-cross-catalog`
-    flag — until then, refusing loudly here surfaces unintentional drift
-    (e.g., a typo'd catalog in bronze_target) before any files are written.
+    a single-catalog layout, which is the dominant case. The cross-catalog
+    scaffold path is not shipped today; if your governance model needs it,
+    contact the skill maintainers — refusing loudly here surfaces unintentional
+    drift (e.g., a typo'd catalog in bronze_target) before any files are
+    written, and gives the maintainers visibility into demand for the
+    cross-catalog code path.
 
     Fires before any disk writes or SDK calls so the failure is atomic. The
     error names all three values so the customer can see which one is the
@@ -220,8 +229,9 @@ def _assert_consistent_catalogs(
             f"  core_target={core_target} (catalog={core_catalog})\n"
             f"  bronze_target={bronze_target} (catalog={bronze_catalog})\n"
             "Cross-catalog OMOP builds aren't supported by the default "
-            "scaffold; ask the maintainers for `--allow-cross-catalog` if "
-            "your governance model actually needs separate catalogs."
+            "scaffold. The cross-catalog scaffold path isn't shipped today; "
+            "contact the skill maintainers if your governance model actually "
+            "needs separate catalogs."
         )
 
 
@@ -346,14 +356,19 @@ OMOP CDM v5.4 build project, scaffolded by `omop-pipeline-builder`.
 ## What's here
 
 - `databricks.yml` — bundle root with catalog/schema variables
-- `resources/jobs.yml` — DAG with `person` uncommented as the first task; the
-  other 13 OMOP CDM v5.4 tables ship as commented placeholders
+- `resources/jobs.yml` — DAG with the 14 buildable OMOP CDM v5.4 tables:
+  `person` uncommented as the first task plus 13 commented placeholders.
+  The skill builds 14 of the 20 tables `validate_omop.py` checks; see
+  "Validation scope vs build scope" below
 - `resources/pipeline_generic.yml` — parameterized SDP pipeline definition
 - `src/` — pipeline code (config_loader, vocab_resolver, transform pipeline, validators)
 - `configs/` — empty; YAML configs land here as you build each table
 - `seed_data/` — STCM template for source-to-concept mappings
 - `tests/` — Pydantic schema tests
-- `docs/omop-runbook.md` — quickstart guide
+- `docs/omop-runbook.md` — quickstart guide; Section 7 walks through the
+  per-table build pattern, Section 7.5 covers BYO-ETL tables
+- `docs/CHANGELOG.md` — skill behavior changes that affect how
+  `validate_omop.py` evaluates your data; review after upgrading
 
 ## Volume target
 
@@ -366,6 +381,36 @@ EHR source tables read from: `{bronze_target}`
 ## Core schema
 
 OMOP core tables materialize in: `{core_target}`
+
+## Validation scope vs build scope
+
+This project builds 14 OMOP CDM v5.4 tables and validates 20.
+The other 6 tables (`visit_detail`, `device_exposure`, `note`,
+`note_nlp`, `specimen`, `dose_era`) are validation-only — the
+skill doesn't generate ETL code for them, but `validate_omop.py`
+still checks them against the spec if your data exists in the
+catalog.
+
+This is by design (architectural decision AD-001). The skill covers
+the 14 most commonly-built OMOP tables; the other 6 require domain-
+specific data sources (Lakeflow Connect for clinical devices, NLP
+pipelines for clinical notes, lab system integrations for specimens)
+that vary too much across customers to template.
+
+If your project needs any of the 6 validation-only tables:
+
+1. Land your data in `{core_target}.<table_name>` via your own ETL —
+   options include Lakeflow Connect, custom Spark jobs, or third-
+   party ELT tools.
+2. Run `python validate_omop.py --table {core_target}.<table_name>` —
+   the validator checks your tables against the OMOP CDM v5.4 spec
+   on whatever data you've built.
+3. Fix any Layer 1 (schema), Layer 4 (domain), or Layer 5 (NOT NULL)
+   findings to bring your data into OHDSI v5.4 conformance.
+
+See `docs/omop-runbook.md` Section 7.5 'BYO-ETL: validation-only
+tables' for the full pattern, including loading guidance for the
+three most common BYO-ETL data sources.
 
 {existing_section}
 
@@ -385,6 +430,10 @@ OMOP core tables materialize in: `{core_target}`
 6. Review and ratify the draft, then commit through your team's normal Git/CI flow.
 7. After deploy, ask the agent: "Validate the Person table." It will run the
    5-layer OMOP fidelity validator.
+8. **Build sequence for the 14 buildable tables:** see `docs/omop-runbook.md`
+   Section 7 (per-table playbook with Person → Visit Occurrence → Condition
+   Occurrence walkthroughs) and `.assistant/skills/omop-pipeline-builder/references/omop_dag_dependencies.md`
+   (Round 1-4 dependency chart) for the order to build subsequent tables.
 
 ## Production deploy
 
@@ -786,6 +835,8 @@ def _cli() -> None:
         print(f"  table detection skipped: {result.detection_skipped_reason}")
     else:
         print("  no existing OMOP tables detected (greenfield)")
+
+    print(f"\nNext: open {result.project_path}/README.md for the next-steps walkthrough.")
 
 
 if __name__ == "__main__":
