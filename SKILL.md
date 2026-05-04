@@ -70,7 +70,7 @@ Pair with the **snake-case-column-renamer** skill when bronze still uses PascalC
 ## What this skill does
 
 1. Documents the end-to-end workflow from bronze inspection through YAML editing, validation, and pipeline run.
-2. Generates each table's YAML config in conversation: the agent issues `SHOW SCHEMAS` / `SHOW TABLES` / `DESCRIBE TABLE` itself against UC, drafts the YAML in working memory against `configs/_schema.yaml` and `configs/person.yaml`, validates via `scripts/validate_yaml_schema.py`, and writes atomically via `scripts/config_writer.py`.
+2. Generates each table's YAML config in conversation: the agent issues `SHOW SCHEMAS` / `SHOW TABLES` / `DESCRIBE TABLE` itself against UC, drafts the YAML in working memory against `configs/_schema.yaml` and `references/canonical_examples.md`, validates via `scripts/validate_yaml_schema.py`, and writes atomically via `scripts/config_writer.py`.
 3. Provides `scripts/generate_source_mappings.py` to resolve distinct source codes against `{catalog}.{ref_schema}.concept` and emit an OHDSI-shaped CSV that can be merged into the `source_to_concept_map` UC table (the runtime source of truth — see [Adding source_to_concept_map mappings](#adding-source_to_concept_map-mappings)).
 4. Provides `scripts/validate_omop.py` to run five validation layers against a target table.
 5. Provides `scripts/run_pipeline.py` to call `WorkspaceClient.pipelines.start_update` with optional `table_name` parameters and poll to completion.
@@ -84,7 +84,7 @@ Skip this step if your team already has an OMOP build repo. This step is for
 the first time someone on your team is starting an OMOP CDM v5.4 build with
 this skill.
 
-> **What scaffolding does and why you only do it once.** The scaffolder writes a working DAB-shaped project tree (bundle config, jobs DAG with all 14 OMOP tables as commented placeholders, src/ boilerplate, empty configs/ folder, seed_data template, README) into a customer-chosen path. The skill writes configs into the project tree on every subsequent invocation; scaffolding only sets up the tree.
+> **What scaffolding does and why you only do it once.** The scaffolder writes a working DAB-shaped project tree (bundle config, jobs DAG with the 14 buildable OMOP tables as commented placeholders, src/ boilerplate, empty configs/ folder, seed_data template, README) into a customer-chosen path. The "buildable" framing reflects the validate-20-build-14 split; see "Validation scope vs build scope" later in this file for the architectural decision (AD-001). The skill writes configs into the project tree on every subsequent invocation; scaffolding only sets up the tree.
 >
 > **Refuse vs retry.** The scaffolder refuses to overwrite a *completed* OMOP project, where all three indicators are present at `project_path`: `databricks.yml`, `src/`, and the `.omop-skill-version` marker file (written last by every successful scaffold). Anything short of a completed scaffold is treated as retry-safe and overwritten cleanly:
 >
@@ -479,7 +479,7 @@ The agent generates the YAML config directly in the conversation. There is no CL
 
 **1. Discover the bronze surface.** Issue `SHOW SCHEMAS IN <catalog>` → `SHOW TABLES IN <catalog>.<bronze_schema>` → `DESCRIBE TABLE EXTENDED <catalog>.<bronze_schema>.<table>` against the customer's workspace via the SDK statement-execution API (the same mechanism `scripts/validate_omop.py` and `scripts/generate_source_mappings.py` use). Confirm the bronze FQN, column names and types, and any obvious primary-key / timestamp columns before drafting.
 
-**2. Read the canonical schema and exemplar.** Load `configs/_schema.yaml` (the Pydantic schema source) and `configs/person.yaml` (the worked example) into working memory. The schema defines what fields the YAML must have and which are required. The exemplar shows the expected shape of `column_mappings`, `joins`, `vocabulary_lookups`, and `expectations`. For **fact tables** (`condition_occurrence`, `procedure_occurrence`, `drug_exposure`), the structural rules — two-lookup pattern, `domain_id` on both lookups, hash-with-resolved-concept-id surrogate keys — are demonstrated by the [Canonical YAML example](#canonical-yaml-example) below. `configs/person.yaml` is the file-shape template; the inline canonical is the fact-table-rules template. They are not competing canonical poles.
+**2. Read the canonical schema and exemplar.** Load `configs/_schema.yaml` (the Pydantic schema source) and `references/canonical_examples.md` (the canonical worked examples) into working memory. The schema defines what fields the YAML must have and which are required. The exemplars show the expected shape of `column_mappings`, `joins`, `vocabulary_lookups`, and `expectations`. For **fact tables** (`condition_occurrence`, `procedure_occurrence`, `drug_exposure`), the structural rules — two-lookup pattern, `domain_id` on both lookups, hash-with-resolved-concept-id surrogate keys — are demonstrated by the [Canonical YAML example](#canonical-yaml-example) below. `references/canonical_examples.md` contains file-level worked examples (`person` for dimension tables, `measurement` for fact-table-with-unit-resolution patterns); the inline canonical here shows the fact-table rule structure in isolation. They are not competing canonical poles.
 
 **3. Draft the YAML in working memory — do not pass-through.** Pass-through means emitting `{target: snake_case(col), expr: "src.<Col>"}` for every bronze column without reasoning about whether each column actually maps to its OMOP target. The agent must instead reason about each mapping per [Step 6 — Review, edit, and validate YAML](#step-6--review-edit-and-validate-yaml)'s decision tree (cast type only / lookup vocabulary / join domain table / split or extract / leave NULL). Use `{catalog}` and `{bronze_schema}` placeholders in `sources[].table` — never hardcoded catalog or schema names; the pipeline's `config_loader.py` substitutes them at runtime from Spark conf.
 
@@ -498,7 +498,7 @@ Starting from the YAML the agent drafted in [Step 5 — Generate config in conve
 - `expectations` (`fail` / `drop` / `warn`) appropriate to the table — at minimum, `fail` on primary-key NOT NULL, `drop` on invalid concept resolutions, `warn` on unmapped vocabularies
 - `column_mappings` — verify each entry maps a bronze column to the correct OMOP target column with the right cast or vocabulary resolution. Drop columns that don't belong, add CASE expressions or vocabulary-resolved references as needed.
 
-Confirm `sources[].table` uses `{catalog}` and `{bronze_schema}` placeholders (never hardcoded catalog or schema names). The pipeline's `config_loader.py` substitutes these at runtime from Spark conf. See `configs/person.yaml` for the pattern.
+Confirm `sources[].table` uses `{catalog}` and `{bronze_schema}` placeholders (never hardcoded catalog or schema names). The pipeline's `config_loader.py` substitutes these at runtime from Spark conf. See `references/canonical_examples.md` for the pattern.
 
 **BEFORE presenting the config to the user, validate it against the Pydantic schema using `scripts/validate_yaml_schema.py` — the standalone validator that ships with this skill (no host-repo `cd` required):**
 
@@ -867,10 +867,27 @@ Both paths converge on the same physical table — the pipeline does not care wh
 
 **Note:** OHDSI Athena uses `Type Concept` as the domain_id for provenance columns (`visit_type_concept_id`, `condition_type_concept_id`, etc.) — not `Visit Type` or `Condition Type`.
 
+## Validation scope vs build scope
+
+This skill makes a deliberate distinction between **validation scope** and **build scope** (architectural decision AD-001 from v2.0.4 closeout):
+
+- **Validation scope: 20 tables.** Every OMOP CDM v5.4 clinical table the skill recognizes lives in [`references/omop_cdm_v54_spec.md`](references/omop_cdm_v54_spec.md) and is checked by `scripts/validate_omop.py` (and the in-project notebook `templates/project_scaffold/src/99_validate_omop_output.py`) against the spec's schema (Layer 1), PK uniqueness (Layer 2), concept FKs (Layer 3), domain conformance (Layer 4), and NOT NULL contracts (Layer 5).
+- **Build scope: 14 tables.** The scaffolder produces an end-to-end build path (DAB jobs, SDP pipelines, YAML configs) for 14 of the 20 tables — the dimension and core fact tables most customers' ETLs build directly from EHR sources. The dependency ordering for these 14 tables lives in `scripts/_omop_dag.py` and [`references/omop_dag_dependencies.md`](references/omop_dag_dependencies.md).
+
+The 6 tables in validation scope but not in build scope are:
+
+`visit_detail`, `device_exposure`, `note`, `note_nlp`, `specimen`, `dose_era`
+
+These are the **bring-your-own-ETL (BYO-ETL)** tables. Customers landing them in their target schema use whatever path fits their source data — Lakeflow Connect, a custom Spark job, an existing OMOP build the team already runs, or any other pipeline — and the skill's validator then checks the result against the spec the same way it checks the 14 build-scope tables. See [`references/omop_dag_dependencies.md`](references/omop_dag_dependencies.md) "Validation-only (BYO-ETL)" section for the per-table sourcing notes.
+
+**Why this split.** The fidelity-vs-coverage tradeoff is real: customers with full EHR-source coverage of all 20 tables would prefer the skill build everything end-to-end; customers with partial source coverage or existing pipelines for some tables would prefer the skill only build what fits their gaps. AD-001 chose the second customer's contract — validate everything in the spec (so customer-built data is checked uniformly) but build only the 14-table core that fits a typical from-EHR-bronze pipeline. v2.0.4a expanded spec coverage from 14 to 20 tables to make the validator-side coverage uniform; the build path stayed at 14 because expanding it without a customer-driven need would impose a build pattern that doesn't match the partial-source-coverage case.
+
+**Cross-references — v2.0.5 spec correctness pass.** The v2.0.5 spec correctness pass closed five OHDSI-fidelity findings against [`references/omop_cdm_v54_spec.md`](references/omop_cdm_v54_spec.md): DC-001, DC-002, DC-004, DC-007, and DC-011. DC-011 introduces `Metadata` as a Domain assignment for the first time in this spec (`note.encoding_concept_id`); see [`references/spec_domain_decisions.md`](references/spec_domain_decisions.md) for the borderline-case decisions log that accompanies the v2.0.5 spec edits. **DC-003** is a customer-visible behavior change: `drug_exposure.drug_exposure_end_date` was previously marked nullable in the spec but is `Required: Yes` in OHDSI v5.4 (which means NOT NULL). The v2.0.5 spec edit changes the Nullable cell from `Y` to `N`, which lets Layer 5's NOT NULL check fire on this column. Customers whose source data leaves `drug_exposure_end_date` NULL on incomplete drug-exposure rows will see new validator findings after upgrading to v2.0.5. OHDSI's narrative on this column recommends imputing missing end dates from `drug_exposure_start_date` plus `days_supply` or equivalent duration rather than leaving NULL; consult your organization's clinical conventions for the specific imputation approach.
+
 ## Not for
 
 This skill does NOT handle:
-- **OMOP CDM tables not yet in scope** (`episode`, `fact_relationship`) — see `references/omop_dag_dependencies.md` for the out-of-scope list. (v2.0.4 added `visit_detail`, `device_exposure`, `note`, `note_nlp`, `specimen`, `dose_era` to bring spec coverage from 14 to 20 tables; `episode` and `fact_relationship` remain deliberately out of scope per the dependency notes.)
+- **OMOP CDM tables not in this skill's scope** (e.g., `episode`, `fact_relationship`) — see [`references/omop_dag_dependencies.md`](references/omop_dag_dependencies.md) "Out of scope (no validator coverage)" section for the full list of tables outside both validation and build scope.
 - **SCD2 / slowly changing dimensions** — use SDP's `create_auto_cdc_flow` directly (see the production path in the runbook)
 - **OHDSI Atlas / Achilles / White Rabbit** — separate OHDSI tools for cohort building, data quality dashboards, and source profiling
 - **Cross-network federated research** — OMOP network study participation requires infrastructure beyond this ETL framework

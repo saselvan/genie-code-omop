@@ -7,6 +7,15 @@ module is what helpers import. Stays in lockstep with the scaffolder's
 `templates/project_scaffold/resources/jobs.yml` task list — drift is
 caught by `tests/test_omop_dag.py::TestDAGJobsYmlLockstep`.
 
+The build DAG covers 14 of the 20 tables in
+`references/omop_cdm_v54_spec.md`. The other 6 (`visit_detail`,
+`device_exposure`, `note`, `note_nlp`, `specimen`, `dose_era`) are
+validation-only per AD-001 — customers bring their own ETL for these
+tables, and `validate_omop` checks them against the spec on
+customer-built data. Callers asking the DAG about these tables
+(via `direct_predecessors` or `topological_sort`) get `KeyError`,
+which is the documented contract for "not buildable by this DAG."
+
 Auth boilerplate not applicable (pure-Python module, no SDK calls).
 
 Adding a new OMOP table:

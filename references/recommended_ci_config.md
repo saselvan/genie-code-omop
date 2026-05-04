@@ -6,8 +6,8 @@ deploy** — your CI/CD pipeline owns deploy. These snippets help you
 wire the skill's validators into the pipeline you already have.
 
 The snippets are working YAML, written for the project layout the
-skill scaffolds (Phase 0a / Step 1 of `SKILL.md`). Adjust paths if
-your bundle lives elsewhere.
+skill scaffolds (see `SKILL.md` "Step 1 — Scaffold the project").
+Adjust paths if your bundle lives elsewhere.
 
 ---
 

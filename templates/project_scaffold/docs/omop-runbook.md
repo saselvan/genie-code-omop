@@ -305,8 +305,7 @@ Expect these differences. Every row has a concrete fix.
 
 | File | What to change | Why |
 |---|---|---|
-| `configs/person.yaml` | Column names in `sources[].table`, `joins[].condition`, `vocabulary_lookups[].source_column`, `column_mappings[].expr` | Your column names differ from synthetic |
-| `configs/visit_occurrence.yaml` | Same as above | Same reason |
+| `configs/<table>.yaml` (each table the agent generates) | Column names in `sources[].table`, `joins[].condition`, `vocabulary_lookups[].source_column`, `column_mappings[].expr` | Your column names differ from synthetic |
 | `seed_data/source_to_concept_map_custom.csv` | Source code values (race, ethnicity, gender, visit type codes) | Your codes differ from synthetic |
 | `databricks.yml` | `production` target variables + workspace host | Points to your workspace |
 
@@ -694,7 +693,7 @@ Key differences from Person:
 - **Provenance concept:** `visit_type_concept_id` is a literal `32817` ("EHR encounter record") — NOT a vocabulary lookup. This is provenance (how the record was captured), not visit kind.
 - **Date range expectation:** `visit_start_date <= visit_end_date` as a `drop` expectation — bad date ranges are removed.
 
-See `configs/visit_occurrence.yaml` for the complete config. Adjust column names to match your schema, deploy, run, validate — same pattern as Person.
+See your generated `configs/visit_occurrence.yaml` for the complete config. Adjust column names to match your schema, deploy, run, validate — same pattern as Person.
 
 ### 7.3 Example 3: Condition Occurrence (Round 3) — With Placeholder
 
@@ -783,7 +782,7 @@ See `SKILL.md` for the complete 8-step workflow. See `references/omop_dag_depend
 | Issue | Fix |
 |---|---|
 | Skill doesn't fire | Re-deploy: `./deploy.sh production`. Verify path: `databricks workspace list "/Workspace/Users/<you>/.assistant/skills/"` |
-| YAML has 10+ Pydantic errors | Skill didn't read canonical example. Re-prompt: "Read configs/person.yaml first, then regenerate." |
+| YAML has 10+ Pydantic errors | Skill didn't read canonical example. Re-prompt: "Read references/canonical_examples.md first, then regenerate." |
 | Genie hangs > 90 seconds | Use pre-generated configs as starting points and edit manually |
 
 ---
@@ -811,8 +810,7 @@ See `SKILL.md` for the complete 8-step workflow. See `references/omop_dag_depend
 
 | File | Purpose | When to modify |
 |---|---|---|
-| `configs/person.yaml` | Person ETL contract | Adjust column names for your EHR source |
-| `configs/visit_occurrence.yaml` | Visit Occurrence ETL contract | Adjust column names |
+| `configs/<table>.yaml` (each agent-generated config) | Per-table ETL contract | Adjust column names for your EHR source |
 | `configs/_schema.yaml` | YAML schema definition (Pydantic) | Never (framework internal) |
 | `seed_data/source_to_concept_map_custom.csv` | Local code → concept_id mapping | Replace with your codes |
 | `src/02_omop_transform_pipeline.py` | Generic SDP pipeline | Never (framework internal) |
