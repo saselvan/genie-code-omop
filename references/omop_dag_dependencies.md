@@ -71,4 +71,4 @@ If your research scope adds these, the spec must grow first (a v2.0.4a-shaped fi
 
 ## Reference
 
-Canonical example: [`resources/jobs.yml`](../../../../resources/jobs.yml) — the active OMOP DAG with Round 1 dimensions, Round 2 visit_occurrence, and 10 placeholder tasks (commented out) showing the full dependency shape for Rounds 3 and 4. (This relative link only resolves inside the OMOP repo clone — when viewing the skill from `/Workspace/.assistant/skills/`, open `resources/jobs.yml` in your repo directly.)
+Canonical example: [`resources/jobs.yml`](../../../../resources/jobs.yml) — the active OMOP DAG with Round 1 dimensions, Round 2 visit_occurrence, and 13 placeholder tasks (commented out) showing the full dependency shape for Rounds 3 and 4. (This relative link only resolves inside the OMOP repo clone — when viewing the skill from `/Workspace/.assistant/skills/`, open `resources/jobs.yml` in your repo directly.)

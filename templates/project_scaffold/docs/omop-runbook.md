@@ -4,14 +4,7 @@ Run the OMOP CDM v5.4 transform framework on your Azure Databricks workspace wit
 
 **Audience:** Data engineers and platform engineers with Databricks CLI and workspace access. Assumes Databricks familiarity but not OMOP expertise.
 
-**Key terms used throughout:**
-- **OMOP CDM** — standard clinical data model maintained by the OHDSI community
-- **OHDSI** — Observational Health Data Sciences and Informatics (the consortium behind OMOP)
-- **SDP** — Spark Declarative Pipelines (formerly DLT) — Databricks serverless pipeline runtime
-- **DAB** — Declarative Automation Bundles — Databricks infrastructure-as-code for deploying jobs + pipelines
-- **Genie Code** — Databricks AI coding assistant; Agent mode lets it use skills (domain-specific tools)
-- **Pydantic** — Python validation library that enforces the YAML config schema
-- Full glossary in [Appendix C](#appendix-c-glossary)
+**Key terms:** see [Appendix D Glossary](#appendix-d-glossary) for definitions of OMOP CDM, OHDSI, SDP, DAB, Genie Code, Pydantic, silver/core, and other terms used throughout.
 
 **Prerequisite:** Your EHR source tables must already be accessible in a Unity Catalog schema. If they're not, work with your data platform team to land them first — that's a separate workstream.
 
@@ -854,3 +847,4 @@ This framework builds the transform layer. The operational layer — monitoring,
 | **EHR source** | the EHR vendor's enterprise data warehouse (the source of your organization's clinical data) |
 | **Pydantic** | Python validation library — enforces the YAML config schema |
 | **UC** | Unity Catalog — Databricks governance layer for data and AI assets |
+| **silver / core** | Same OMOP target schema, two names from two cultural frames. **Silver** comes from medallion-architecture conventions (bronze → silver → gold tiers). **Core** comes from OHDSI / OMOP CDM naming (the "core OMOP tables" are the standardized clinical data tables). Both terms appear in this skill's docs and code (e.g., the `core_target` config field that customers set, the `core_omop` default schema name, `bundle_state.py`'s `silver_tables` field, the `_probe_silver_tables` workspace probe, and references to "silver tables in Unity Catalog" elsewhere in this runbook). They name the same schema; the dual vocabulary is preserved because each frame has its audience |
