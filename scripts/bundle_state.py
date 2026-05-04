@@ -6,6 +6,16 @@ the agent reads what already exists and branches accordingly. This
 module is the read-only state probe that produces a structured
 `BundleState` snapshot.
 
+Note on vocabulary: this module uses "silver" to describe the OMOP
+target schema (e.g., the ``silver_tables`` field on ``BundleState``,
+the ``_probe_silver_tables`` helper). Customer-facing surfaces
+(configs, the runbook) use "core" for the same schema (e.g., the
+``core_target`` config field, the ``core_omop`` default schema name).
+The two terms are synonyms in this skill — silver from medallion-
+architecture conventions, core from OHDSI / OMOP CDM naming. See
+``templates/project_scaffold/docs/omop-runbook.md`` Appendix D
+Glossary for the dual-vocabulary rationale.
+
 Decision 7: re-read on every invocation. No manifest, no caching.
 Decision 10: Git-backed bundles are the recommended default; Git status is
 part of state. Decision 12: this module does not deploy.
