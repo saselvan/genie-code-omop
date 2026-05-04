@@ -225,8 +225,13 @@ WHERE table_catalog = '{cat}' AND table_schema = '{sch}' AND table_name = '{tbl}
     table_missing = not actual
     if table_missing:
         msg = (
-            f"table `{cat}`.`{sch}`.`{tbl}` does not exist in catalog; "
-            f"subsequent layers will skip checks for this table"
+            f"table `{cat}`.`{sch}`.`{tbl}` does not exist in catalog. "
+            f"If this is a validation-only table (visit_detail, "
+            f"device_exposure, note, note_nlp, specimen, dose_era), see "
+            f"docs/omop-runbook.md Section 7.5 'BYO-ETL: validation-only "
+            f"tables' for the BYO-ETL pattern (per AD-001). Otherwise, the "
+            f"build pipeline may not have run yet, or '{tbl}' may be "
+            f"misspelled. Subsequent layers will skip checks for this table."
         )
         print(f"FAIL: {msg}")
         findings.append(

@@ -126,7 +126,10 @@ def main() -> None:
     cols = spec_map.get(tbl.lower())
     if not cols:
         raise SystemExit(
-            f"No spec section found for table '{tbl}' in {spec_path}. Add a ## {tbl} section."
+            f"Table '{tbl}' isn't in the OMOP CDM v5.4 spec at {spec_path}. "
+            f"The validator only runs against the 20 spec-covered tables — "
+            f"check the spelling against the spec, or omit if '{tbl}' isn't "
+            f"a standard OMOP CDM table."
         )
 
     w = WorkspaceClient(profile=args.profile) if args.profile else WorkspaceClient()
