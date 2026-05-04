@@ -273,7 +273,7 @@ def _probe_git_status(project_path: str) -> tuple[GitStatus, str | None]:
     # Second + third git calls. Mirror the breadth of error handling from
     # the first call so the documented "never raises" contract holds even
     # if the git binary disappears between calls or the OS surfaces a
-    # transient PermissionError on /. (PE-review fix.)
+    # transient PermissionError on /.
     try:
         branch_proc = _run_git(project_path, "rev-parse", "--abbrev-ref", "HEAD")
         status_proc = _run_git(project_path, "status", "--porcelain")

@@ -71,7 +71,7 @@ resources:
           email_recipients:
             - ${var.notification_email}
 
-    # Template for the remaining 10 OMOP CDM v5.4 tables. Uncomment + customize once the
+    # Template for the remaining 12 OMOP CDM v5.4 tables. Uncomment + customize once the
     # corresponding configs/<table>.yaml exists.
     #
     # omop_care_site:
@@ -97,4 +97,5 @@ resources:
     #
     # Repeat the block above for: provider, location, observation_period,
     # condition_occurrence, procedure_occurrence, drug_exposure, measurement,
-    # condition_era, drug_era. Update the resource key, name, and table_name.
+    # observation, death, condition_era, drug_era. Update the resource key,
+    # name, and table_name.
