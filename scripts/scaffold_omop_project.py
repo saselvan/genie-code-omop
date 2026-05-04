@@ -73,7 +73,7 @@ SHARED_SPEC_PATH = (
 #      has `databricks.yml` and `src/` but no marker is a crashed scaffold,
 #      and the scaffolder allows retry-with-overwrite. See
 #      `scaffold_project`'s refuse guard.
-_CURRENT_SKILL_VERSION = "2.0.4"
+_CURRENT_SKILL_VERSION = "2.0.5"
 
 
 class VolumeNotFoundError(Exception):
