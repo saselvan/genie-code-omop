@@ -1,6 +1,19 @@
 #!/usr/bin/env python3
 """Resolve distinct source codes against ``concept`` and emit an OHDSI-shaped CSV.
 
+Single-vocabulary CSV bootstrap utility. Takes ``--source-vocabulary-id``,
+``--source-table``, ``--source-code-column`` flags; emits a CSV per invocation.
+Direct concept lookup only (no Maps-to traversal); the emitted ``target_concept_id``
+is the ``concept_id`` for the matched ``(vocabulary_id, concept_code)`` pair, which
+may itself be non-standard.
+
+For per-table-config-driven multi-vocabulary draft generation with single-hop
+Maps-to traversal and coverage tracking, see ``generate_source_concept_map.py``
+(v2.0.7+). Both scripts coexist; pick by use case:
+
+  - One column, one vocabulary, one-off bootstrap     ->  this script
+  - Many configs, many vocabularies, repeatable run   ->  generate_source_concept_map.py
+
 The CSV is a bootstrap input, not the runtime artifact. The OMOP transforms join to
 the Delta table ``{catalog}.{ref_schema}.source_to_concept_map`` in UC at run time;
 the resolver does not read CSVs.

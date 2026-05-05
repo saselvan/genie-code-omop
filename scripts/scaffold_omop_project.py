@@ -614,12 +614,52 @@ def _verify_volume_exists(volume_target: str, profile: str | None = None) -> Non
         ) from e
 
 
+# Deny-list patterns for the template tree walk.
+# The dev repo's root .gitignore excludes these patterns from version
+# control, but the on-disk templates/ directory accumulates __pycache__
+# directories and .pyc files at every pytest/import run because
+# templates/project_scaffold/{src,tests} are themselves importable Python
+# packages. Without this filter, the scaffolder's rglob would copy those
+# bytecode artifacts verbatim into customer projects, polluting the
+# customer's first git commit with bytecode whose Python version may
+# differ from the customer's runtime. Both _copy_template_tree (the
+# scaffolder) and the test suite's _expected_template_file_count
+# consume _is_excluded_template_path so the exclusion logic stays in
+# one place.
+_EXCLUDED_TEMPLATE_DIR_NAMES: frozenset[str] = frozenset({"__pycache__"})
+_EXCLUDED_TEMPLATE_FILE_SUFFIXES: tuple[str, ...] = (".pyc",)
+
+
+def _is_excluded_template_path(rel_path: Path) -> bool:
+    """Return True if a template-tree path must NOT be copied into customer projects.
+
+    Excluded:
+    - Any path with a ``__pycache__`` directory component anywhere in
+      its parts (catches both nested and top-level cache dirs).
+    - Any file with a ``.pyc`` suffix (compiled Python bytecode).
+
+    The scaffolder uses this to filter ``rglob`` results in
+    ``_copy_template_tree``; the test suite imports it so the
+    drift-regression count gate (``_expected_template_file_count``)
+    applies the same exclusion as the implementation.
+    """
+    if any(part in _EXCLUDED_TEMPLATE_DIR_NAMES for part in rel_path.parts):
+        return True
+    if rel_path.suffix in _EXCLUDED_TEMPLATE_FILE_SUFFIXES:
+        return True
+    return False
+
+
 def _copy_template_tree(src: Path, dst: Path) -> int:
     """Copy every file under src/ into dst/, preserving directory structure.
 
     Returns the number of files copied. Raises FileNotFoundError if src doesn't
     exist. Idempotent at the directory level: copying twice into the same dst
     overwrites cleanly.
+
+    Skips Python bytecode artifacts (``__pycache__/`` directories and
+    ``*.pyc`` files) per the deny-list — see
+    ``_is_excluded_template_path`` for the canonical exclusion logic.
     """
     if not src.exists():
         raise FileNotFoundError(
@@ -633,6 +673,8 @@ def _copy_template_tree(src: Path, dst: Path) -> int:
         if path.is_dir():
             continue
         rel = path.relative_to(src)
+        if _is_excluded_template_path(rel):
+            continue
         out = dst / rel
         out.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, out)
@@ -684,7 +726,7 @@ def _copy_shared_spec(src_file: Path, dst_dir: Path) -> int:
     Sibling helper to ``_copy_shared_module`` rather than a generalized
     multi-file copier because each shared-file pattern carries its own
     semantic (validator = code single-source-of-truth; spec = data
-    single-source-of-truth) and     conflating them now would couple their lifecycles — unification awaits
+    single-source-of-truth) and conflating them now would couple their lifecycles — unification awaits
     a third shared-file pattern that shows the right shared abstraction.
 
     Returns 1 on success (parallel to ``_copy_shared_module``'s file count).

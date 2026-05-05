@@ -19,7 +19,7 @@ Structured ``findings`` exist so the notebook can populate a Spark
 DataFrame without parsing the CLI's stdout. The CLI ignores
 ``findings`` and consumes only ``failure_count``; the CLI's print
 output is byte-stable across minor versions (Layer 5's behavior
-change in v2.0.5 is the documented exception — see CHANGELOG).
+change in a recent release is the documented exception — see CHANGELOG).
 
 Layer functions take a ``sql_fn: SqlFn`` callable and never construct
 or use a ``WorkspaceClient`` directly — the CLI orchestrator builds
@@ -318,6 +318,7 @@ def run_layer_2(
     the query — that combination doesn't fit Layer 2's cross-row shape
     and is a known followup (rare in OMOP, where most tables have
     single-column PKs).
+
     """
     print("== Layer 2: primary key uniqueness ==")
     findings: list[Finding] = []

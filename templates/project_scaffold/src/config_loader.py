@@ -120,6 +120,39 @@ class VocabularyLookup(BaseModel):
         return self
 
 
+class SourceVocabulary(BaseModel):
+    """Generator-input metadata: which OHDSI vocabulary a customer's source codes belong to.
+
+    Drives the v2.0.7+ source-to-concept mapping draft generator
+    (``scripts/generate_source_concept_map.py``). Distinct from ``VocabularyLookup`` —
+    that class governs the runtime resolver's behavior; this class tells the offline
+    draft generator the source vocabulary per (source_alias, source_column).
+
+    Customer configs may have a column appear in both ``vocabulary_lookups`` and
+    ``source_vocabulary`` for the same (source_alias, source_column). Values typically
+    match (``vocabulary_lookups[].source_vocabulary_id`` == ``source_vocabulary[].vocabulary_id``)
+    but the two sections are semantically separate; equality is not enforced.
+
+    The section is optional; pre-v2.0.7 configs without it validate clean.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_alias: str = Field(
+        json_schema_extra={"description": "Source row the codes live on (matches sources[].alias)."},
+    )
+    source_column: str = Field(
+        json_schema_extra={"description": "Column on that source carrying the raw codes."},
+    )
+    vocabulary_id: str = Field(
+        json_schema_extra={
+            "description": "OHDSI vocabulary the codes belong to (e.g. ICD10CM, SNOMED, RxNorm, "
+            "LOINC, CPT4, HCPCS, NDC). Permissive string; the generator's coverage report "
+            "surfaces unrecognized vocabularies."
+        },
+    )
+
+
 class ColumnMapping(BaseModel):
     """Single target column from a SQL expression."""
 
@@ -159,6 +192,7 @@ class OMOPConfig(BaseModel):
     sources: list[Source]
     joins: list[Join] = Field(default_factory=list)
     vocabulary_lookups: list[VocabularyLookup] = Field(default_factory=list)
+    source_vocabulary: list[SourceVocabulary] = Field(default_factory=list)
     column_mappings: list[ColumnMapping]
     expectations: Expectations = Field(default_factory=Expectations)
 
@@ -207,15 +241,17 @@ def load_config(yaml_path: str | Path) -> OMOPConfig:
     raw = yaml.safe_load(text)
     config = OMOPConfig.model_validate(raw)
     logger.info(
-        "Validated config table_name=%s sources=%d joins=%d lookups=%d",
+        "Validated config table_name=%s sources=%d joins=%d lookups=%d source_vocabs=%d",
         config.table_name,
         len(config.sources),
         len(config.joins),
         len(config.vocabulary_lookups),
+        len(config.source_vocabulary),
     )
     print(
         f"[config_loader] Validated table_name={config.table_name} "
-        f"sources={len(config.sources)} joins={len(config.joins)} lookups={len(config.vocabulary_lookups)}",
+        f"sources={len(config.sources)} joins={len(config.joins)} "
+        f"lookups={len(config.vocabulary_lookups)} source_vocabs={len(config.source_vocabulary)}",
         flush=True,
     )
     return config

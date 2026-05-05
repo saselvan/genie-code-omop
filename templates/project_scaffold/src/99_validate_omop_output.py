@@ -15,6 +15,7 @@ Tables present in the spec but missing from the customer's catalog
 produce a clean ``schema:table_missing`` finding from Layer 1 plus
 per-layer SKIPs; they do not raise tracebacks.
 
+
 Runs as a Databricks Python task or as a notebook (re-add a ``# Databricks
 notebook source`` header on line 1 for notebook-task semantics).
 """

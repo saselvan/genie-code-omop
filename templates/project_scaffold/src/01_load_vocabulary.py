@@ -165,6 +165,66 @@ def _parse_ddl_cols(ddl: str):
     return cols
 
 
+# Post-load assertion that the load-bearing tables
+# are non-empty. The COPY INTO loop below intentionally swallows per-file
+# failures (so the CPT4-license-gated vocabulary stays a soft skip), which
+# means without this assertion the entire load could no-op silently and
+# downstream pipelines would resolve every concept_id to 0. Pure function
+# (no module-level dbutils dependency) so the assertion logic is testable
+# in isolation via AST extraction.
+#
+# Tables NOT asserted because they are legitimately empty in supported
+# configurations:
+#   - source_to_concept_map: empty until the customer seeds custom codes
+#     per docs/omop-runbook.md Section 6.2.
+#   - concept_cpt4: license-gated (separate Athena license step; the
+#     comment at the bottom of this file documents the soft skip).
+#   - concept_synonym, concept_ancestor, drug_strength: may be omitted
+#     from minimal Athena bundles; their absence does not invalidate
+#     the core load.
+def _assert_vocabulary_load_succeeded(
+    spark,
+    fq_ref: str,
+    vocab_volume_path: str,
+    required_tables=("concept", "concept_relationship"),
+):
+    """Raise RuntimeError if any required vocabulary table is empty.
+
+    Closes the silent-success failure mode where empty vocabulary loads previously exited successfully.
+    Before this assertion: a job exiting SUCCESS did not mean data
+    loaded — the COPY INTO loop catches and logs per-file failures
+    (intentional for the CPT4-license-gated case), so the entire load
+    could no-op and the job would still exit 0. After this assertion:
+    if the job exits SUCCESS, the load-bearing tables are non-empty.
+
+    Parameters are injected so the function can be unit-tested with a
+    mock spark; production call site below uses the real spark/dbutils
+    bindings from the notebook environment.
+    """
+    empty_tables = []
+    for t in required_tables:
+        n = spark.sql(f"SELECT COUNT(*) AS c FROM {fq_ref}.`{t}`").collect()[0]["c"]
+        if n == 0:
+            empty_tables.append(t)
+    if empty_tables:
+        raise RuntimeError(
+            "Vocabulary load failed: the following load-bearing "
+            f"tables contain zero rows: {empty_tables}. Expected ~6-10M rows "
+            "in `concept` and ~55M rows in `concept_relationship` after a "
+            "full OHDSI Athena load. Common causes:\n"
+            "  (1) CSV files not present on the Volume — verify with: "
+            f"databricks fs ls '{vocab_volume_path}/'\n"
+            "  (2) COPY INTO hit a type mismatch — re-run this script as "
+            "a notebook and check the per-cell SKIP messages above.\n"
+            "  (3) Wrong volume path — verify the vocab_volume_path widget "
+            f"value (current: '{vocab_volume_path}').\n"
+            "See docs/omop-runbook.md Section 6.1 for the full "
+            "troubleshooting flow. If the issue persists after working through "
+            "Section 6.1, file an issue at "
+            "https://github.com/saselvan/genie-code-omop/issues."
+        )
+
+
 # COMMAND ----------
 
 for file_base, table_key in VOCAB_LOAD_ORDER:
@@ -307,6 +367,14 @@ for t in count_tables:
         print(f"{catalog}.{ref_schema}.{t}: {n}")
     except Exception as ex:
         print(f"{catalog}.{ref_schema}.{t}: <error {ex}>")
+
+# COMMAND ----------
+
+_assert_vocabulary_load_succeeded(spark, fq_ref, vocab_volume_path)
+print(
+    "Post-load assertion: PASS — load-bearing vocabulary tables "
+    "(concept, concept_relationship) are non-empty."
+)
 
 # COMMAND ----------
 

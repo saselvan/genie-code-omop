@@ -60,6 +60,34 @@ joins:
 vocabulary_lookups: []
 
 # -----------------------------------------------------------------------------
+# source_vocabulary — generator-input metadata for the v2.0.7+ source-to-concept
+#   mapping draft generator (`scripts/generate_source_concept_map.py`).
+# -----------------------------------------------------------------------------
+# Distinct from `vocabulary_lookups` above: that section governs the runtime
+# resolver's behavior; this section tells the offline draft generator which
+# OHDSI vocabulary each source column's codes belong to so it can query
+# `reference.concept` by `(vocabulary_id, concept_code)` and follow Maps-to
+# relationships when needed.
+#
+# COEXISTENCE: customer configs may have a column appear in both sections (a
+# `vocabulary_lookups[]` entry for runtime resolution AND a `source_vocabulary[]`
+# entry for offline mapping draft). Values typically match
+# (`vocabulary_lookups[].source_vocabulary_id` == `source_vocabulary[].vocabulary_id`)
+# but the two sections are semantically separate; equality is not enforced.
+#
+# Per entry:
+#   source_alias  — which source row the codes live on (matches `sources[].alias`).
+#   source_column — column name on that source carrying the raw codes.
+#   vocabulary_id — OHDSI vocabulary the codes belong to (e.g. "ICD10CM", "SNOMED",
+#                   "RxNorm", "LOINC", "CPT4", "HCPCS", "NDC"). Permissive string;
+#                   the generator's coverage report will surface unrecognized vocabs.
+#
+# Optional — omit or leave empty [] if you do not plan to use the v2.0.7+ mapping
+# generator for this table. Existing pre-v2.0.7 configs without this section
+# validate clean (no breaking change).
+source_vocabulary: []
+
+# -----------------------------------------------------------------------------
 # column_mappings — target OMOP column <- Spark SQL expression.
 # -----------------------------------------------------------------------------
 # target: OMOP column name in snake_case.
@@ -193,6 +221,31 @@ config_json_schema:
                 resolution: { const: concept_table_mapped }
             then:
               required: [domain_id, vocabulary_id]
+    source_vocabulary:
+      type: array
+      description: >
+        Generator-input metadata for the v2.0.7+ source-to-concept mapping draft
+        generator. Each entry tells the generator which OHDSI vocabulary a given
+        source column's codes belong to. Distinct from vocabulary_lookups (which
+        governs runtime resolver behavior). Optional — omit for tables not using
+        the mapping generator.
+      items:
+        type: object
+        additionalProperties: false
+        required: [source_alias, source_column, vocabulary_id]
+        properties:
+          source_alias:
+            type: string
+            description: Source row the codes live on (matches sources[].alias).
+          source_column:
+            type: string
+            description: Column on that source carrying the raw codes.
+          vocabulary_id:
+            type: string
+            description: >
+              OHDSI vocabulary the codes belong to (e.g. ICD10CM, SNOMED, RxNorm,
+              LOINC, CPT4, HCPCS, NDC). Permissive string; the generator's
+              coverage report surfaces unrecognized vocabularies.
     column_mappings:
       type: array
       minItems: 1

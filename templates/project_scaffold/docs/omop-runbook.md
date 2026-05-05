@@ -1,6 +1,12 @@
 # OMOP Transform Framework — Independent Runbook
 
-Run the OMOP CDM v5.4 transform framework on your Azure Databricks workspace with real EHR source data. No screenshare required — follow end-to-end, call us on Slack when stuck.
+Run the OMOP CDM v5.4 transform framework on your Azure Databricks workspace with real EHR source data. No screenshare required — follow end-to-end.
+
+**This skill is a solution accelerator.** After scaffolding, you own the generated project and the production data it produces. There is no skill-side support relationship; the skill drafts artifacts that you review and apply (architectural decision AD-002 — see [`AD-002-skill-drafts-customer-reviews.md`](../../.assistant/skills/omop-pipeline-builder/references/AD-002-skill-drafts-customer-reviews.md)). When you need help:
+
+- **Skill bugs or feature requests** — file an issue at https://github.com/saselvan/genie-code-omop/issues. Include your skill version (`.omop-skill-version` in your project root) and the relevant validator / generator output.
+- **OMOP CDM questions** — the OHDSI community at https://forums.ohdsi.org is the right surface for vocabulary semantics, domain conformance, and ETL convention questions.
+- **Databricks platform questions** — follow your organization's normal Databricks support channels (workspace admin, Databricks support contract, or solution architect).
 
 **Audience:** Data engineers and platform engineers with Databricks CLI and workspace access. Assumes Databricks familiarity but not OMOP expertise.
 
@@ -515,7 +521,9 @@ SELECT COUNT(*) FROM {catalog}.reference.concept_relationship;  -- expect ~55M
 SELECT COUNT(*) FROM {catalog}.reference.source_to_concept_map; -- expect 0 (seeded next)
 ```
 
-**If concept table is empty:** The vocabulary load failed silently. Check: (1) Are CSV files on the Volume? `databricks fs ls "/Volumes/{catalog}/reference/vocabulary_files/"` (2) Did `COPY INTO` hit a type mismatch? Re-run `src/01_load_vocabulary.py` as a notebook and check cell outputs for errors. (3) Always verify row counts — a job exiting SUCCESS does not mean data loaded.
+**If the load-bearing tables are empty (`concept`, `concept_relationship`):** As of v2.0.7 this fails the job loudly — `01_load_vocabulary.py` includes a post-load assertion that raises `RuntimeError` when either of these tables is zero rows after the COPY INTO loop completes (the COPY INTO loop itself catches per-file failures so the CPT4-license-gated case stays a soft skip; the post-load assertion catches the catastrophic-failure case where every COPY INTO failed). The error message names the three common causes inline: (1) CSV files not present on the Volume — verify with `databricks fs ls "/Volumes/{catalog}/reference/vocabulary_files/"`; (2) `COPY INTO` hit a type mismatch — re-run `src/01_load_vocabulary.py` as a notebook and check the per-cell `SKIP` messages; (3) wrong volume path — verify the `vocab_volume_path` widget value. Tables not asserted (legitimately empty in some configurations): `source_to_concept_map` (empty until you seed in Section 6.2), `concept_cpt4` (CPT4-license-gated; soft-skipped), and `concept_synonym` / `concept_ancestor` / `drug_strength` (may be omitted from minimal Athena bundles).
+
+**Customer impact for v2.0.7 upgrades:** If your v2.0.6 vocabulary load was silently zero-row and your downstream pipelines were resolving every `*_concept_id` to 0, your v2.0.7 vocabulary load will now exit non-zero with the diagnostic above instead of exiting SUCCESS. Re-run row-count verification on your existing `{catalog}.reference.concept` table before scheduling the v2.0.7 job — if it's already zero, the v2.0.6 silent failure is the upstream cause and the v2.0.7 assertion is correctly surfacing it.
 
 ### 6.2 Seeding `source_to_concept_map` with Your Codes
 
@@ -592,6 +600,274 @@ WHERE source_vocabulary_id = 'Race';
 ```
 
 **Iterating:** Add new code sets by appending rows to the CSV and re-running. Monitor coverage via `warn` expectations in pipeline output (e.g., `known_race_concept: race_concept_id != 0` tells you what percentage resolved).
+
+### 6.3 Drafting `source_to_concept_map` at scale (multi-vocabulary, config-driven)
+
+Section 6.2 Step 4 covers the single-vocabulary bootstrap path via `generate_source_mappings.py`. Once you have multiple per-table YAML configs landed (typically by the time you're past Person + Visit Occurrence and onto Condition / Drug / Procedure / Measurement / Observation), the per-vocabulary one-off invocations become repetitive. The `generate_source_concept_map.py` generator (v2.0.7+) drafts STCM rows for **all source vocabularies declared across multiple per-table configs in one run** by reading each config's `source_vocabulary[]` block.
+
+This generator follows the same draft → review → MERGE handoff pattern as Section 6.2 (architectural decision AD-002 — see [`references/AD-002-skill-drafts-customer-reviews.md`](../../.assistant/skills/omop-pipeline-builder/references/AD-002-skill-drafts-customer-reviews.md)). The generator drafts CSV rows; you review the coverage report; `01_load_vocabulary.py` MERGEs the CSV. The generator does not auto-MERGE.
+
+**Prerequisite — declare source vocabularies in your per-table configs.**
+
+Each per-table YAML config that needs draft generation gets a `source_vocabulary[]` block declaring which OHDSI vocabulary each source column's codes belong to. This is distinct from `vocabulary_lookups[]` (which governs runtime resolver behavior); `source_vocabulary[]` is generator input only.
+
+```yaml
+# configs/condition_occurrence.yaml
+source_vocabulary:
+  - source_alias: dx
+    source_column: DiagnosisCode
+    vocabulary_id: ICD10CM
+  - source_alias: dx
+    source_column: SecondaryDiagnosisCode
+    vocabulary_id: ICD10CM
+```
+
+The Pydantic schema validates that `source_alias` matches an entry in `sources[]` and that `vocabulary_id` is a non-empty string; the generator surfaces unrecognized vocabularies in the coverage report rather than failing.
+
+**Step 1: Run the multi-vocabulary draft generator.**
+
+```bash
+python .assistant/skills/omop-pipeline-builder/scripts/generate_source_concept_map.py \
+  --configs configs/condition_occurrence.yaml \
+            configs/observation.yaml \
+            configs/person.yaml \
+            configs/visit_occurrence.yaml \
+  --catalog {catalog} \
+  --bronze-schema {bronze_schema} \
+  --ref-schema reference \
+  --output seed_data/source_to_concept_map_custom.csv \
+  --output-report-dir reports \
+  --profile $DATABRICKS_CONFIG_PROFILE
+```
+
+What the generator does:
+
+1. Reads each YAML config's `source_vocabulary[]` and `sources[]` blocks; resolves `{catalog}` / `{bronze_schema}` placeholders into source-table FQNs.
+2. For each `(source_alias, source_column)` tuple, runs `SELECT DISTINCT <column> FROM <fqn> WHERE <column> IS NOT NULL` against the bronze data.
+3. For each declared `vocabulary_id`, batches the distinct codes and queries `reference.concept` (chunk size 500 by default) to find direct matches.
+4. For non-standard concepts found in step 3, queries `reference.concept_relationship` for `Maps to` targets (single-hop traversal — this is OHDSI's Approach 1; multi-hop chains surface as `unresolved_ambiguous`).
+5. Writes drafted STCM rows to the CSV: `target_concept_id` is the standard concept reached, or 0 for codes in the three `unresolved_*` buckets.
+6. Emits a markdown coverage report at `reports/source_mapping_coverage_<timestamp>.md` summarizing the resolution outcome (skip with `--no-report` if you don't need it).
+
+**Step 2: Review the coverage report.**
+
+The report scopes manual review work via five mutually exclusive resolution buckets:
+
+- **`resolved_direct`** — source code matched a STANDARD concept directly (e.g. SNOMED for conditions when the source data is already SNOMED-coded). Trust the drafted `target_concept_id`.
+- **`resolved_via_maps_to`** — source code matched a non-standard concept whose `Maps to` chain reached a standard concept (the typical ICD10CM → SNOMED case). Trust the drafted `target_concept_id`; spot-check a sample for clinical appropriateness.
+- **`unresolved_no_concept`** — source code is not present in `reference.concept` for the declared vocabulary. Likely a custom EHR code, a deprecated code, or a code-format mismatch (dots / dashes / leading characters). Manual mapping required.
+- **`unresolved_no_maps_to`** — source code matches a non-standard concept that has no `Maps to` relationship in the loaded vocabulary version. Check the OHDSI Athena release notes for the version you loaded; the missing relationship may be a known gap (the OHDSI vocabulary team adds Maps-to entries iteratively across releases).
+- **`unresolved_ambiguous`** — source code's `Maps to` target is itself non-standard (multi-hop chain) OR has multiple standard targets. v2.0.7's resolver does not auto-traverse multi-hop or auto-pick among multiple standards; manual review owns the choice.
+
+Per-column attribution in the report tells you which per-table YAML config to revisit for each unresolved code — codes from `configs/condition_occurrence.yaml` get attributed to that config, separately from codes from `configs/observation.yaml`, even when both columns share `vocabulary_id: ICD10CM`.
+
+**Step 3: Manually map the unresolved rows.**
+
+Open the drafted CSV (`seed_data/source_to_concept_map_custom.csv`) and locate rows with `target_concept_id = 0`. For each, look up the appropriate standard concept via OHDSI Athena (https://athena.ohdsi.org) — search by source code, by source description, or by clinical synonym. Replace `target_concept_id = 0` with the chosen standard concept_id; update `target_vocabulary_id` accordingly.
+
+**Step 4: Upload and reload (same as Section 6.2 Step 5).**
+
+```bash
+databricks fs cp seed_data/source_to_concept_map_custom.csv \
+  "/Volumes/{catalog}/reference/vocabulary_files/source_to_concept_map_custom.csv" \
+  --overwrite --profile $DATABRICKS_CONFIG_PROFILE
+
+databricks bundle run setup_vocabulary -t production --profile $DATABRICKS_CONFIG_PROFILE
+```
+
+The MERGE in `01_load_vocabulary.py` is idempotent — re-running with an updated CSV updates the rows with new `target_concept_id` values without producing duplicates (MERGE keys on `source_code` + `source_vocabulary_id`).
+
+**Step 5: Re-validate the affected tables.**
+
+After the MERGE completes, re-run the affected pipelines and re-run `validate_omop.py` (or the in-project `99_validate_omop_output.py` notebook) to confirm Layer 3 (FK integrity) findings have shrunk for the columns you remapped.
+
+#### Worked example — sample coverage report
+
+The generator emits the following kind of report. Concrete numbers and codes vary by your bronze data; the structure and section ordering are stable across runs. This sample is rendered from synthetic CoverageData; no real customer data is included.
+
+````markdown
+# Source-to-concept mapping coverage report
+
+_Generated: `2026-05-04T14-30-22`_
+
+Drafted source_to_concept_map rows from the mapping generator. This report is the post-generation triage artifact for the draft generator (`scripts/generate_source_concept_map.py`). Use it to scope manual mapping work for the unresolved buckets before running `01_load_vocabulary.py` to MERGE the CSV into the UC `source_to_concept_map` Delta table.
+
+## Overview
+
+- Vocabularies analyzed: **3**
+- (source_alias, source_column) tuples covered: **4**
+- Distinct source codes seen: **4236**
+- Resolved (standard concept reached): **4121** (97.3%)
+- Unresolved (manual mapping required): **115**
+
+## Per-vocabulary coverage
+
+Five mutually exclusive resolution buckets per source vocabulary. `resolved_direct` + `resolved_via_maps_to` is the resolved-to-standard-concept count; the three `unresolved_*` columns identify gaps that need manual mapping.
+
+| vocabulary_id | total | resolved | direct | via Maps-to | unresolved | no concept | no Maps-to | ambiguous | resolution % |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| ICD10CM | 4218 | 4109 | 0 | 4109 | 109 | 37 | 58 | 14 | 97.4% |
+| Race | 12 | 8 | 8 | 0 | 4 | 4 | 0 | 0 | 66.7% |
+| Visit | 6 | 4 | 4 | 0 | 2 | 2 | 0 | 0 | 66.7% |
+
+## Per-column coverage attribution
+
+Distinct codes seen per `(source_alias, source_column)` tuple, with the originating per-table YAML config for traceability.
+
+| config | table | source_alias | source_column | vocabulary_id | distinct codes | resolved | unresolved |
+|---|---|---|---|---|---:|---:|---:|
+| configs/condition_occurrence.yaml | condition_occurrence | dx | DiagnosisCode | ICD10CM | 3914 | 3826 | 88 |
+| configs/observation.yaml | observation | prob | ProblemListCode | ICD10CM | 612 | 591 | 21 |
+| configs/person.yaml | person | pat | RaceCode | Race | 12 | 8 | 4 |
+| configs/visit_occurrence.yaml | visit_occurrence | enc | EncounterTypeCode | Visit | 6 | 4 | 2 |
+
+## Sample unmapped codes
+
+Up to **20** unmapped codes per vocabulary, in lexicographic order. Use these as the starting point for manual mapping work.
+
+### ICD10CM
+B97.29
+J12.82
+M79.604
+R05.9
+U07.1
+Z11.52
+Z20.822
+
+### Race
+DECLINED
+OTHER
+UNK
+UNREPORTED
+
+### Visit
+LWBS
+TELE
+
+## Recommended next steps
+
+1. **Resolved rows**: trust the drafted `target_concept_id` values for codes in the `resolved_direct` and `resolved_via_maps_to` buckets.
+2. **Unresolved rows (`target_concept_id = 0`)**: manual mapping is required before `01_load_vocabulary.py` MERGEs the CSV (per AD-002 — skill-drafts / customer-reviews handoff).
+3. **Per-column attribution**: prioritize manual mapping work by per-table YAML config — configs with the largest `unresolved` columns warrant the most attention.
+4. **Vocabulary coverage**: vocabularies where `total_distinct_codes` is large but `resolution %` is low may indicate a vocabulary version mismatch, a CPT4 license-gating issue, or a custom code system incorrectly tagged with an OHDSI vocabulary_id.
+
+## Generation metadata
+
+- Generator: `scripts/generate_source_concept_map.py` (v2.0.7+)
+- Resolver: `scripts/_concept_resolver.py` (Approach 1, single-hop Maps-to)
+- valid_start_date written to STCM rows: `20260504`
+- valid_end_date written to STCM rows: `20991231`
+- Concept-lookup IN-list chunk size: `500`
+- Configs read: 4
+````
+
+The actual emitted report includes per-vocabulary metadata footers and renderer-level escaping for special characters in code values; see `scripts/_coverage_report.py` for the rendering source of truth.
+
+#### When to use which generator
+
+| Situation | Use |
+|---|---|
+| One vocabulary, one column, you're bootstrapping the first STCM rows | `generate_source_mappings.py` (Section 6.2 Step 4) |
+| Multiple vocabularies across multiple per-table configs, configs already landed | `generate_source_concept_map.py` (this section) |
+| Running coverage analysis without re-drafting the CSV | (defers to v2.0.8) — until then, re-run `generate_source_concept_map.py` and inspect the new coverage report |
+| You need an HTML coverage report instead of markdown | (defers to v2.0.8) — until then, view the markdown report in any modern editor or paste into a wiki |
+
+### 6.4 Vocabulary refresh procedure
+
+OHDSI publishes Athena vocabulary releases on an irregular cadence (typically quarterly, sometimes more frequent for safety / regulatory updates such as new ICD codes for emerging conditions or RxNorm updates for newly approved drugs). Refreshing the vocabulary on your workspace is operationally similar to the first-load procedure (Section 6.1), but the consequences are different — a refresh can both improve coverage (corrections) and reduce coverage (regressions), and you need to discriminate the two.
+
+#### When to refresh
+
+- **Quarterly check.** Visit https://athena.ohdsi.org and compare the latest release date against your loaded version. Your loaded version is recoverable from the vocabulary's `vocabulary` table: `SELECT vocabulary_id, vocabulary_version FROM {catalog}.reference.vocabulary WHERE vocabulary_id = 'ICD10CM';` (and analogously for SNOMED, RxNorm, LOINC, CPT4).
+- **Triggered by a known content event.** New ICD code blocks (e.g. annual ICD-10-CM updates released by CMS each October), new vaccine/drug entries in RxNorm, or OHDSI-announced safety corrections may justify an out-of-cycle refresh.
+- **Before validating a new bronze data window.** If your bronze source data has expanded into a code range you didn't previously have (e.g. a new clinical service launched, or a new ICU unit's terminology came online), refreshing before drafting STCM rows for the new codes raises the resolution percentage in the coverage report.
+
+Refreshing more frequently than quarterly is rarely necessary outside the safety/regulatory case; OHDSI's Maps-to relationships and standard_concept assignments are stable enough between releases that quarterly cadence is the conventional baseline.
+
+#### How to refresh
+
+The mechanics are identical to Section 6.1 — re-download from Athena, re-extract, re-upload to the UC Volume, re-run the vocabulary load job. `01_load_vocabulary.py` uses MERGE for `concept`, `concept_relationship`, and the other vocabulary tables, so re-running is idempotent: rows that haven't changed remain unchanged, rows with updates land their updates, and new rows are inserted.
+
+```bash
+unzip -o "vocabulary_download_v5_*.zip" -d /tmp/ohdsi_vocab
+mv /tmp/ohdsi_vocab/{cpt4.jar,cpt.sh,readme.txt,cpt.bat} /tmp/ohdsi_vocab_extras/ 2>/dev/null || true
+
+databricks fs cp -r /tmp/ohdsi_vocab/ \
+  "/Volumes/{catalog}/reference/vocabulary_files/" \
+  --overwrite --profile $DATABRICKS_CONFIG_PROFILE
+
+databricks bundle run setup_vocabulary -t production --profile $DATABRICKS_CONFIG_PROFILE
+```
+
+The CPT4 license refresh (if you use CPT4) is a separate step — re-run the CPT4 license workflow in Athena before downloading, otherwise CPT4 codes will resolve to 0 after refresh just as they did on first load.
+
+#### What to expect — regression vs correction discrimination
+
+A refresh produces three kinds of diff against your previously-loaded vocabulary:
+
+**Corrections (good, expected):**
+
+- New `Maps to` relationships added that weren't present in your previous version. Codes that previously landed in `unresolved_no_maps_to` now resolve via Maps-to traversal.
+- Newly added concept_codes for source codes that didn't previously exist in the vocabulary. Codes that previously landed in `unresolved_no_concept` now resolve.
+- Updated `standard_concept` assignments where a more accurate standard was promoted.
+
+**Regressions (potentially bad, may need action):**
+
+- Concepts that previously had `standard_concept = 'S'` now have `standard_concept = NULL` (no longer standard). Pipelines that relied on the previously-standard concept now resolve to 0 because the resolver only emits standard concepts. This is OHDSI's standard-concept maintenance — the de-promoted concept usually has an alternative; check the concept's Maps-to entries in Athena.
+- Concepts that previously existed are now marked with `invalid_reason = 'D'` (deprecated) or `'U'` (upgraded). The resolver filters these out (Section 5.1 covers this); the customer-side effect is that codes pointing to the deprecated concept now resolve to 0 unless an upgrade replacement exists in concept_relationship.
+- Maps-to relationships that previously existed have been removed. Codes that resolved via Maps-to in the previous version now land in `unresolved_no_maps_to`.
+
+**Neutral changes:**
+
+- Vocabulary version bumps with no semantic change. Common for minor releases that update timestamps without altering the concept content for vocabularies your data uses.
+
+#### How to detect regressions vs corrections
+
+The coverage report (Section 6.3) is the natural diagnostic surface. Run it before and after the refresh against the same per-table configs and bronze data, then diff the two reports:
+
+```bash
+# Before refresh — capture baseline coverage
+python .assistant/skills/omop-pipeline-builder/scripts/generate_source_concept_map.py \
+  --configs configs/*.yaml \
+  --catalog {catalog} --bronze-schema {bronze_schema} \
+  --output-report-dir reports/before_refresh \
+  --output seed_data/draft_before.csv \
+  --profile $DATABRICKS_CONFIG_PROFILE
+
+# Run the vocabulary refresh (above)
+# ... 
+
+# After refresh — capture post-refresh coverage  
+python .assistant/skills/omop-pipeline-builder/scripts/generate_source_concept_map.py \
+  --configs configs/*.yaml \
+  --catalog {catalog} --bronze-schema {bronze_schema} \
+  --output-report-dir reports/after_refresh \
+  --output seed_data/draft_after.csv \
+  --profile $DATABRICKS_CONFIG_PROFILE
+
+# Diff the two coverage reports
+diff reports/before_refresh/source_mapping_coverage_*.md \
+     reports/after_refresh/source_mapping_coverage_*.md
+```
+
+The per-vocabulary table's resolution-percentage column makes the diff direction obvious: a vocabulary where `resolution %` increased is a correction; a vocabulary where it decreased is a regression. The per-column attribution table tells you which per-table YAML config to investigate for regressed columns.
+
+For a more granular signal, run `validate_omop.py` Layer 3 (FK integrity) before and after the refresh — the FAIL counts on `*_concept_id` columns surface regressions where previously-valid concept_ids no longer resolve.
+
+#### What to do when regressions are found
+
+For each regressed code:
+
+1. Look up the previous standard concept_id in OHDSI Athena. The Athena concept page surfaces `valid_start_date`, `valid_end_date`, and `invalid_reason` — these tell you whether the concept was deprecated, de-standardized, or upgraded.
+2. If the concept was upgraded (`invalid_reason = 'U'`), check the `Concept Replaced by` relationship in Athena for the new standard concept. Update your manual STCM row (or the drafted STCM row, if you re-ran the generator) to point at the new standard.
+3. If the concept was deprecated without replacement, the source code no longer has a clinical OHDSI mapping. Decide whether to (a) accept resolution to 0 (the row will surface as a Layer 3 finding but won't break the pipeline), or (b) map manually to the closest clinically appropriate standard concept based on your domain expertise.
+4. If the regression is unexpected for your data (a code you'd expect to remain mapped suddenly doesn't), file an issue at the OHDSI vocabulary GitHub (https://github.com/OHDSI/Vocabulary-v5.0/issues) — community-curated vocabularies sometimes have unintended regressions that the OHDSI team accepts as bug reports.
+
+#### Idempotency contract — safe to re-run
+
+`01_load_vocabulary.py` uses Delta MERGE on `concept` (key: `concept_id`), `concept_relationship` (key: `concept_id_1, concept_id_2, relationship_id`), `vocabulary` (key: `vocabulary_id`), and the other vocabulary tables. Re-running the vocabulary load job is safe and produces no duplicates. The COPY INTO → MERGE pipeline is the recommended pattern for both first-load and refresh; the runbook does not provide a separate "refresh-mode" job because the same job works for both cases.
+
+If a refresh is interrupted mid-load (network blip, warehouse auto-scaling event, transient SDK error), simply re-run `databricks bundle run setup_vocabulary -t production`. Delta tracks loaded files via the operation log, so COPY INTO skips already-loaded files; MERGE re-applies cleanly against any partially-loaded rows.
 
 ---
 
@@ -746,6 +1022,7 @@ Three patterns cover the most common BYO-ETL data sources:
 
 OMOP CDM v5.4 spec coverage is the conformance test surface; build coverage is the engineering surface. The 6 BYO-ETL tables are real OHDSI v5.4 clinical tables — the spec must include them so customers who do build them get conformance checks. The build surface is narrower because templating ETL for clinical devices, NLP outputs, or specimen tracking would produce code that doesn't match any specific customer's data shape. Customer ETL plus skill validation is the right contract.
 
+
 ---
 
 ## 8. Troubleshooting
@@ -804,7 +1081,79 @@ OMOP CDM v5.4 spec coverage is the conformance test surface; build coverage is t
 |---|---|
 | Skill doesn't fire | Re-deploy: `./deploy.sh production`. Verify path: `databricks workspace list "/Workspace/Users/<you>/.assistant/skills/"` |
 | YAML has 10+ Pydantic errors | Skill didn't read canonical example. Re-prompt: "Read references/canonical_examples.md first, then regenerate." |
-| Genie hangs > 90 seconds | Use pre-generated configs as starting points and edit manually |
+| Genie hangs > 90 seconds | Fall back to pre-generated configs as starting points and edit manually. Then file a hang report at https://github.com/saselvan/genie-code-omop/issues — include the table you were generating, the bronze schema shape, and the agent transcript if available. The skill has no automated hang telemetry; the GitHub Issues queue is the only signal the maintainers see for production hang patterns. |
+
+---
+
+## 9. Security considerations
+
+This skill operates inside Genie Code Agent mode, which provides certain platform-level protections (Unity Catalog identity propagation, Lakeguard query isolation, model-input filtering at the Anthropic API layer, confirmation gates for destructive operations). Other security-relevant properties depend on workspace and account configuration that the skill cannot enforce. This section names the configuration prerequisites and skill-flow-specific responsibilities customers should review before running this skill in production against PHI or otherwise-sensitive data.
+
+This is not a comprehensive security guide; it is a checklist of skill-relevant items that customers in regulated environments commonly need to address. Your organization's security review process is the authoritative surface for which controls are required.
+
+### 9.1 Skills are not secrets
+
+The contents of `.assistant/skills/` (this skill's instructions, references, scripts, templates) are accessible to any user with workspace access who can invoke Genie Code. Genie Code can be coerced via prompt patterns to write out skill content. Treat everything in your scaffolded project's `.assistant/skills/`, `src/`, `configs/`, `seed_data/`, and `references/` directories as readable by anyone who can reach the workspace.
+
+What this means in practice:
+
+- **Do not embed credentials, API keys, or PHI in any skill-readable file.** This includes seeded `source_to_concept_map_custom.csv` rows (the source codes themselves usually aren't PHI but verify before committing), per-table YAML configs, and reference documentation. Use Databricks Secrets (https://learn.microsoft.com/en-us/azure/databricks/security/secrets) for runtime credentials; reference them via `${{ secrets.* }}` substitution in `databricks.yml` rather than inlining.
+- **Do not assume agent-side instructions stay private.** If you customize SKILL.md or add reference files for your project, treat the content as effectively public-within-workspace.
+- **Generated YAML configs are not secrets either.** The agent writes configs into `configs/`; anyone with workspace read access can see them. The configs reference UC catalog/schema/table names — confirm these names are not themselves sensitive (e.g. patient-cohort-name leakage via a table name).
+
+### 9.2 Restricted Access network mode
+
+The Databricks platform default is **Full Access** network egress (unrestricted outbound from compute resources). Customers in regulated environments typically opt into **Restricted Access** at the account level, which limits egress to an allowlist of Databricks-managed endpoints plus customer-configured destinations.
+
+The skill cannot enforce Restricted Access — this is an account-level configuration decision. If your organization's security policy requires restricted egress for AI features, confirm with your account admin that Restricted Access is enabled for the workspaces where this skill will run. The Databricks documentation on AI feature network configuration covers the specifics for Genie Code Agent mode (https://learn.microsoft.com/en-us/azure/databricks/generative-ai/agent-framework/managed-features).
+
+### 9.3 Verbose audit logging
+
+Default Databricks audit logging captures workspace-level events (who logged in, what notebooks were run, what jobs completed) but may not capture the granular query and command execution detail that HIPAA, HITECH, or your organization's audit requirements demand.
+
+For HLS / regulated production use:
+
+- Enable verbose audit logging at the workspace level (https://learn.microsoft.com/en-us/azure/databricks/admin/account-settings/verbose-logs).
+- Confirm that audit log delivery to your SIEM or audit-log destination is configured and validated.
+- Verify that workspace queries against `core_omop` tables produce auditable trail entries that meet your retention and access-tracking requirements.
+
+Workspace audit logs capture executed SQL and notebook operations. Agent-side reasoning traces, intermediate tool calls, and generated-but-not-executed code are NOT confirmed to be in customer-queryable system tables today. If your audit requirements include capturing what the agent considered (not just what it executed), this is a known gap — see Section 9.6.
+
+### 9.4 HIPAA / Compliance Security Profile workspace mode
+
+Genie Code Agent mode is HIPAA-eligible only in workspaces configured under Databricks' Compliance Security Profile (CSP). If your skill use will touch PHI:
+
+- Confirm with your account admin that the workspace is in CSP mode (https://learn.microsoft.com/en-us/azure/databricks/security/privacy/hipaa).
+- Confirm that your Business Associate Agreement (BAA) with Databricks is in place and covers AI features.
+- Confirm that the catalogs and schemas the skill will read (bronze, silver, reference) are within the CSP-protected workspace boundary.
+
+The skill itself does not implement HIPAA-specific data handling at the platform layer (encryption, access controls, audit trails are platform-provided in CSP mode). The skill does need you to verify the workspace prerequisite is met.
+
+### 9.5 Customer responsibility for reviewing generated code
+
+Per AD-002 (skill-drafts / customer-reviews handoff — see [`references/AD-002-skill-drafts-customer-reviews.md`](../../.assistant/skills/omop-pipeline-builder/references/AD-002-skill-drafts-customer-reviews.md)), the skill generates artifacts that the customer reviews and applies. Generated YAML configs, drafted STCM rows, and scaffolded Python notebooks are all draft artifacts.
+
+The security implication: **the customer is the security review gate for everything the skill generates.** This includes:
+
+- **YAML configs.** Generated configs reference your UC table paths, vocabulary lookups, and column expressions. Review for unintended data exposure (e.g. a join that exposes more PHI than the OMOP target requires) before deployment.
+- **Drafted STCM rows.** The generator writes `target_concept_id` values based on OHDSI vocabulary lookups. Confirm that resolved standard concepts are clinically appropriate before MERGEing the CSV — a wrong mapping can mis-classify clinical data downstream.
+- **Scaffolded notebooks.** `01_load_vocabulary.py`, `02_omop_transform_pipeline.py`, `99_validate_omop_output.py` and other scaffolded files are reference implementations. Customers running them in production should review them as code their team owns, not as black-box infrastructure.
+
+Standard secure-development practices apply to all generated code: code review before merge, change-tracking via git, and post-deploy validation via the 5-layer validator and your organization's data-quality monitoring.
+
+### 9.6 Audit-trail gap for agent reasoning
+
+Workspace audit logs capture executed SQL and Python operations. They do not currently capture:
+
+- The agent's reasoning trace (what the agent considered before producing output).
+- Intermediate tool calls the agent made during a generation flow (e.g. workspace introspection queries the agent ran to discover bronze schema).
+- Generated-but-not-executed code (e.g. a YAML config draft that was generated, reviewed, and rejected without ever being deployed).
+
+For most use cases, this gap is acceptable — the executed-operation audit trail is sufficient for compliance and forensic purposes. For organizations with audit requirements that include the agent's deliberation surface (rather than just outcomes), this is a known limitation. The conventional mitigations:
+
+- Capture agent transcripts manually at decision points (e.g. when reviewing a generated YAML config, save the prompt + response pair to a project-tracked decisions log).
+- Treat the per-table YAML config diffs in your git history as the authoritative record of "what the agent produced and what the customer accepted." The git commit log is the de facto deliberation-outcome audit trail even when the deliberation itself isn't captured.
+- File a feature request at https://github.com/saselvan/genie-code-omop/issues if your organization's audit requirements would benefit from richer agent-side telemetry — the skill's surface area for this is limited but maintainer-visible feedback shapes future decisions.
 
 ---
 
