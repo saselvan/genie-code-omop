@@ -5,7 +5,7 @@ license: MIT
 compatibility: Designed for Databricks Genie Code Agent mode launched from a notebook with a Python-capable cluster (serverless or classic). Genie Code launched from the catalog browser, a Genie Space, or the SQL editor is backed by a SQL warehouse and CANNOT run this skill's Step 6 Pydantic validator — see "Compute requirements" below. Requires databricks-sdk, pyyaml, pydantic. Run pipeline triggering uses Pipelines Editor native run when available, scripts/run_pipeline.py from notebooks.
 metadata:
   author: Samuel Selvan
-  version: "2.0.7.4"
+  version: "2.0.7.5"
   built_for_session: "2026-04-29 OMOP transform framework hands-on"
 ---
 
@@ -60,7 +60,7 @@ These three rules guide what the agent does during generation; they do not enfor
        expr: "CAST(0 AS INT)"
      ```
 
-     The standardized counterpart (`race_concept_id`) is still resolved correctly via `source_to_concept_map` per the collision-warning rule above. The `*_source_concept_id` column is OPTIONAL traceability for the source vocabulary's OHDSI representation; when the source vocabulary has no meaningful OHDSI representation (institution-specific numerics), the documented sentinel `0` is the correct value. Apply this exception to `race_source_concept_id`, `ethnicity_source_concept_id`, and `visit_type_concept_id` source-side traceability fields.
+     The standardized counterpart (`race_concept_id`) is still resolved correctly via `source_to_concept_map` per the collision-warning rule above. The `*_source_concept_id` column is OPTIONAL traceability for the source vocabulary's OHDSI representation; when the source vocabulary has no meaningful OHDSI representation (institution-specific numerics), the documented sentinel `0` is the correct value. Apply this exception to `race_source_concept_id` and `ethnicity_source_concept_id` source-side traceability fields. Visit Type is excluded from the exception list — `visit_type_concept_id` records EHR-capture provenance using OHDSI's text-coded `Type Concept` vocabulary (e.g., concept `32817` for "EHR"), not numeric institution codes, so no semantic-collision risk exists. Resolve `visit_type_concept_id` via the standard `*_source_concept_id` rule above.
    - For `concept_table_mapped`: set `domain_id` (required — filters one-to-many to the correct domain), `relationship_id` (default "Maps to", override for "Maps to unit" or "Maps to value"), `standard_only` (default true)
    - **One-to-many fan-out:** `concept_table_mapped` may produce multiple output rows per source row (OHDSI convention). Include the resolved concept_id in surrogate key expressions.
 
@@ -516,6 +516,7 @@ Starting from the YAML the agent drafted in [Step 5 — Generate config in conve
 - `vocabulary_lookups` — every lookup needs `resolution`, `source_alias`, `domain_id`, and `fallback`. If a lookup uses `resolution: source_to_concept_map`, also plan how the required rows will land in the UC `source_to_concept_map` table — see [Adding source_to_concept_map mappings](#adding-source_to_concept_map-mappings).
 - `expectations` (`fail` / `drop` / `warn`) appropriate to the table — at minimum, `fail` on primary-key NOT NULL, `drop` on invalid concept resolutions, `warn` on unmapped vocabularies
 - `column_mappings` — verify each entry maps a bronze column to the correct OMOP target column with the right cast or vocabulary resolution. Drop columns that don't belong, add CASE expressions or vocabulary-resolved references as needed.
+- **Do not add a `column_mapping` for a column already targeted by a `vocabulary_lookup`.** The pipeline auto-passthroughs vocabulary_lookup targets; an explicit `column_mapping` for the same column is redundant at best, and will fail at pipeline runtime with `UNRESOLVED_COLUMN` if the `expr` references a non-existent `<target>_resolved` column. If a vocabulary lookup writes `race_concept_id`, omit `race_concept_id` from `column_mappings` entirely — the pipeline will write the resolved value.
 
 Confirm `sources[].table` uses `{catalog}` and `{bronze_schema}` placeholders (never hardcoded catalog or schema names). The pipeline's `config_loader.py` substitutes these at runtime from Spark conf. See `references/canonical_examples.md` for the pattern.
 
