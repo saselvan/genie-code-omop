@@ -77,6 +77,8 @@ expectations:
 - Small `CASE` for gender_concept_id (only 3 values: M/F/unknown) — cheaper than a vocabulary lookup.
 - No `xxhash64` surrogate key here — the bronze `patient_id` is already a stable PK; passthrough is safe for dimension tables.
 
+> **Note — `death_datetime` does NOT belong in `person`.** OMOP CDM v5.4's `person` table has exactly 18 columns; `death_datetime` is **not** one of them. Death data lives in the separate `death` table (`death_date`, `death_datetime`, `death_type_concept_id`, `cause_concept_id`, `cause_source_value`, `cause_source_concept_id`). If your bronze `patient` table carries a death-date column (Caboodle `DeathDate`, Clarity `DeathDateKey`, etc.), build the `death` OMOP table separately — do not add a `death_datetime` mapping to `person.yaml`. Generated configs that include `death_datetime` in `person` will trigger Layer 1 schema warnings from `validate_omop.py`.
+
 > **Next: read [`SKILL.md`'s inline `condition_occurrence` canonical example](../SKILL.md#canonical-yaml-example)** for the two-lookup fact-table shape that LLMs reliably get wrong without explicit guidance.
 
 ## measurement — `concept_table_mapped` with `Maps to unit`

@@ -5,7 +5,7 @@ license: MIT
 compatibility: Designed for Databricks Genie Code Agent mode launched from a notebook with a Python-capable cluster (serverless or classic). Genie Code launched from the catalog browser, a Genie Space, or the SQL editor is backed by a SQL warehouse and CANNOT run this skill's Step 6 Pydantic validator — see "Compute requirements" below. Requires databricks-sdk, pyyaml, pydantic. Run pipeline triggering uses Pipelines Editor native run when available, scripts/run_pipeline.py from notebooks.
 metadata:
   author: Samuel Selvan
-  version: "2.0.7.3"
+  version: "2.0.7.4"
   built_for_session: "2026-04-29 OMOP transform framework hands-on"
 ---
 
@@ -52,6 +52,15 @@ These three rules guide what the agent does during generation; they do not enfor
    - **Standard vocabularies that ARE the standard** for their domain (LOINC for Measurement) → `resolution: concept_table`
    - **Standard vocabularies that need crosswalk** to the domain's standard (ICD10CM→SNOMED, CPT4→SNOMED, NDC→RxNorm, ICD10PCS→SNOMED) → `resolution: concept_table_mapped` with `domain_id` set to the target OMOP table's domain. **ICD-10 codes are NOT standard in OMOP — SNOMED is. Never use `concept_table` for `condition_concept_id` when the source is ICD-10.**
    - **`*_source_concept_id` columns** (traceability — stores the non-standard source concept) → `resolution: concept_table` with `vocabulary_id` (required) AND `domain_id` (required — typically matches the vocabulary name; e.g., for Gender source-concept lookup use `vocabulary_id: Gender, domain_id: Gender`) AND `standard_only: false`. The Pydantic `VocabularyLookup` validator rejects `concept_table` lookups missing either field with `resolution=concept_table requires both vocabulary_id and domain_id`.
+
+     **EXCEPTION for collision-prone vocabularies.** When the source vocabulary is one of the institution-coded numerics covered by the semantic-collision warning above (Race, Ethnicity, Visit Type), do NOT add a `concept_table` `vocabulary_lookups` entry for the `*_source_concept_id` column. The institution's numeric codes do not correspond to OHDSI `concept_code` values semantically — joining `concept_code = CAST(<source> AS STRING)` produces clinically wrong results (institution Race code `1` would resolve to OHDSI "American Indian or Alaska Native" instead of the institution's intended "White"). Instead, in `column_mappings`, set the source-concept-id target to the unknown-concept sentinel:
+
+     ```yaml
+     - target: race_source_concept_id
+       expr: "CAST(0 AS INT)"
+     ```
+
+     The standardized counterpart (`race_concept_id`) is still resolved correctly via `source_to_concept_map` per the collision-warning rule above. The `*_source_concept_id` column is OPTIONAL traceability for the source vocabulary's OHDSI representation; when the source vocabulary has no meaningful OHDSI representation (institution-specific numerics), the documented sentinel `0` is the correct value. Apply this exception to `race_source_concept_id`, `ethnicity_source_concept_id`, and `visit_type_concept_id` source-side traceability fields.
    - For `concept_table_mapped`: set `domain_id` (required — filters one-to-many to the correct domain), `relationship_id` (default "Maps to", override for "Maps to unit" or "Maps to value"), `standard_only` (default true)
    - **One-to-many fan-out:** `concept_table_mapped` may produce multiple output rows per source row (OHDSI convention). Include the resolved concept_id in surrogate key expressions.
 
@@ -206,8 +215,17 @@ Within a single round, ties break alphabetically. Build in dependency
 order — the validator's L3 referential integrity layer needs upstream
 tables to exist.
 
-**If the project is not scaffolded** (no `.omop-skill-version` marker):
-the agent stops and surfaces:
+**Project-detection heuristics.** The agent identifies a project as scaffolded if EITHER of the following holds at `project_path`:
+
+1. **Heuristic 1 (canonical):** `.omop-skill-version` marker file is present (the signal the scaffolder writes last on every successful run).
+
+2. **Heuristic 2 (legacy / repaired):** `databricks.yml` exists AND `src/` directory exists AND `configs/` directory exists with at least one `.yaml` file other than `_schema.yaml`.
+
+Heuristic 2 catches projects that were scaffolded with an earlier skill version (before `.omop-skill-version` was introduced) or projects where the marker was inadvertently deleted. When the agent detects a project via Heuristic 2 (no marker but the other signals are present), it surfaces:
+
+> I detected this is an OMOP project (`databricks.yml` + `src/` + non-empty `configs/`) but it's missing the `.omop-skill-version` marker. I'll proceed treating it as a valid project. Recommended: create the marker file with `echo '<current-skill-version>' > .omop-skill-version` so future agent invocations have the canonical signal.
+
+**If neither heuristic matches** (no marker AND no databricks.yml/src/configs combination): the agent stops and surfaces:
 
 > This directory doesn't look like a scaffolded OMOP project. Run the
 > scaffolder first via Step 1, or point me at the right project path.
