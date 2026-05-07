@@ -5,7 +5,7 @@ license: MIT
 compatibility: Designed for Databricks Genie Code Agent mode launched from a notebook with a Python-capable cluster (serverless or classic). Genie Code launched from the catalog browser, a Genie Space, or the SQL editor is backed by a SQL warehouse and CANNOT run this skill's Step 6 Pydantic validator — see "Compute requirements" below. Requires databricks-sdk, pyyaml, pydantic. Run pipeline triggering uses Pipelines Editor native run when available, scripts/run_pipeline.py from notebooks.
 metadata:
   author: Samuel Selvan
-  version: "2.0.7.2"
+  version: "2.0.7.3"
   built_for_session: "2026-04-29 OMOP transform framework hands-on"
 ---
 
@@ -37,11 +37,21 @@ These three rules guide what the agent does during generation; they do not enfor
 
 2. **Validate before presenting.** After writing the YAML, import the standalone validator (`from validate_yaml_schema import validate`) and call `validate("/Workspace/Users/<your_user>/configs/your.yaml")`. Confirm 0 Pydantic errors. See [Step 6](#step-6--review-edit-and-validate-yaml) for the full 3-step Python pattern (CLI form is the always-safe fallback). If errors exist, fix the YAML and re-validate. Do NOT present the config or any summary to the user until validation passes with 0 errors. **If `executeCode` cannot run Python — e.g., it errors that the runtime is a SQL warehouse, or import/`%pip` operations fail with "Python is not supported" — STOP immediately. Do not retry, do not attempt SQL-only workarounds, do not generate the YAML without validation. Tell the user verbatim: "This skill needs a Python-capable notebook kernel. Open Genie Code from a notebook (any cluster — serverless works) and rerun the same prompt. The catalog browser, Genie Space, and SQL editor surfaces back the agent with a SQL warehouse and cannot execute the Pydantic validator." See [Compute requirements](#compute-requirements-read-before-launching).**
 
-3. **Choose the right resolution strategy — ALWAYS query the reference schema, even if an existing config exists.** An existing config may use an outdated resolution strategy. Do NOT copy resolution strategies from old configs without verifying them. Query the reference schema EVERY TIME: `SELECT COUNT(*) FROM {catalog}.{ref_schema}.concept WHERE vocabulary_id = '<vocab>' AND concept_code = '<sample_code>'`. Then apply this decision tree:
+3. **Choose the right resolution strategy — ALWAYS query the reference schema, even if an existing config exists.** An existing config may use an outdated resolution strategy. Do NOT copy resolution strategies from old configs without verifying them. Query the reference schema EVERY TIME: `SELECT COUNT(*) FROM {catalog}.{ref_schema}.concept WHERE vocabulary_id = '<vocab>' AND concept_code = '<sample_code>'`.
+
+   **CRITICAL — semantic-collision warning for institution-coded vocabularies (Race, Ethnicity, Visit Type):**
+
+   When the source vocabulary uses institution-specific numeric codes (Race, Ethnicity, Visit Type — these vocabularies have institution-defined numbering schemes that vary by EHR vendor), the OHDSI `concept` table may contain the SAME code values with COMPLETELY DIFFERENT semantics. For example, Epic/Caboodle/Clarity Race code `1` typically means "White" by institutional convention, while OHDSI Race vocabulary `concept_code = '1'` means "American Indian or Alaska Native". Both rows exist in the concept table; the meanings do not match.
+
+   A literal `concept_table` lookup against the institution's numeric codes would produce **clinically wrong results** (in a typical Caboodle Race distribution, ~61% of patients would be misclassified). The codes existing in the concept table is **not** evidence that the meanings match.
+
+   **Rule:** For `Race`, `Ethnicity`, and `Visit Type` (and any other institution-coded numeric vocabulary), ALWAYS check `source_to_concept_map` FIRST regardless of whether the codes exist in the concept table. Use `resolution: source_to_concept_map` when an STCM mapping exists. Use `resolution: concept_table` for these vocabularies only when (a) the source codes are unambiguously OHDSI-aligned (e.g., concept_code patterns like `OMOP12345` or numeric concept_ids like `8507`), or (b) you have explicit semantic verification (the institution code N truly means the same thing as OHDSI concept_code N for the same vocabulary).
+
+   **Decision tree (applied AFTER the collision check above):**
    - **Local/institution-specific codes** (race, ethnicity, visit type) that do NOT exist in the reference schema → `resolution: source_to_concept_map`
    - **Standard vocabularies that ARE the standard** for their domain (LOINC for Measurement) → `resolution: concept_table`
    - **Standard vocabularies that need crosswalk** to the domain's standard (ICD10CM→SNOMED, CPT4→SNOMED, NDC→RxNorm, ICD10PCS→SNOMED) → `resolution: concept_table_mapped` with `domain_id` set to the target OMOP table's domain. **ICD-10 codes are NOT standard in OMOP — SNOMED is. Never use `concept_table` for `condition_concept_id` when the source is ICD-10.**
-   - **`*_source_concept_id` columns** (traceability — stores the non-standard source concept) → `resolution: concept_table` with `standard_only: false`
+   - **`*_source_concept_id` columns** (traceability — stores the non-standard source concept) → `resolution: concept_table` with `vocabulary_id` (required) AND `domain_id` (required — typically matches the vocabulary name; e.g., for Gender source-concept lookup use `vocabulary_id: Gender, domain_id: Gender`) AND `standard_only: false`. The Pydantic `VocabularyLookup` validator rejects `concept_table` lookups missing either field with `resolution=concept_table requires both vocabulary_id and domain_id`.
    - For `concept_table_mapped`: set `domain_id` (required — filters one-to-many to the correct domain), `relationship_id` (default "Maps to", override for "Maps to unit" or "Maps to value"), `standard_only` (default true)
    - **One-to-many fan-out:** `concept_table_mapped` may produce multiple output rows per source row (OHDSI convention). Include the resolved concept_id in surrogate key expressions.
 
@@ -498,20 +508,30 @@ The validator has two interchangeable surfaces. Use whichever fits your `execute
 **Python (preferred — kernel survives across executeCode calls within a session):**
 
 ```python
-import sys
-sys.path.insert(0, "/Workspace/.assistant/skills/omop-pipeline-builder/scripts")
+import os, sys
+
+current_user = spark.sql("SELECT current_user() AS u").collect()[0]["u"]
+user_scope_path = f"/Workspace/Users/{current_user}/.assistant/skills/omop-pipeline-builder/scripts"
+workspace_scope_path = "/Workspace/.assistant/skills/omop-pipeline-builder/scripts"
+skill_path = user_scope_path if os.path.exists(user_scope_path) else workspace_scope_path
+
+sys.path.insert(0, skill_path)
 from validate_yaml_schema import validate
-cfg = validate("/Workspace/Users/<your_user>/configs/your_table.yaml")
+cfg = validate(f"/Workspace/Users/{current_user}/configs/your_table.yaml")
 print(f"OK: {cfg.table_name}, {len(cfg.column_mappings)} columns, {len(cfg.vocabulary_lookups)} lookups")
 ```
 
-The `sys.path.insert` literal `/Workspace/.assistant/skills/omop-pipeline-builder/scripts` is fixed thanks to workspace-scope deploy — the same path works for every user invoking the skill. The kernel persists across `executeCode` calls within a session, so `from validate_yaml_schema import validate` only pays the import cost once.
+The skill auto-detects whether it is installed at user-scope (the default mode for `install.sh`, which writes to `/Workspace/Users/<current_user>/.assistant/skills/...`) or workspace-scope (admin install at `/Workspace/.assistant/skills/...`) and resolves `scripts/` dynamically. The same pattern works for any user invoking the skill regardless of install mode. `current_user` is resolved at runtime via `spark.sql("SELECT current_user()")` so the agent never has to substitute a placeholder. The kernel persists across `executeCode` calls within a session, so `from validate_yaml_schema import validate` only pays the import cost once.
 
 **CLI (always-safe fallback):**
 
 ```bash
-python /Workspace/.assistant/skills/omop-pipeline-builder/scripts/validate_yaml_schema.py \
-  /Workspace/Users/<your_user>/configs/your_table.yaml
+# Substitute <current_user> with your workspace email (e.g., name@example.com).
+# The same scripts/ directory is at /Workspace/.assistant/skills/... if the
+# skill was installed workspace-scope by an admin instead of user-scope by
+# install.sh.
+python /Workspace/Users/<current_user>/.assistant/skills/omop-pipeline-builder/scripts/validate_yaml_schema.py \
+  /Workspace/Users/<current_user>/configs/your_table.yaml
 ```
 
 Exit code 0 = valid; exit code 1 = invalid (errors printed to stderr).
