@@ -40,6 +40,17 @@ if [ -z "$EXTRACTED_DIR" ]; then
   exit 1
 fi
 
+# Strip repo-root packaging files before workspace import.
+# These are needed in the public repo for distribution but don't
+# belong in a customer's Genie Code skill directory (their presence
+# at the skill-folder top level silently breaks @-menu discovery).
+echo "Stripping packaging files from extracted skill..."
+rm -f "$EXTRACTED_DIR/install.sh"
+rm -f "$EXTRACTED_DIR/README.md"
+rm -f "$EXTRACTED_DIR/LICENSE"
+rm -f "$EXTRACTED_DIR/.gitignore"
+rm -f "$EXTRACTED_DIR/CHANGELOG.md"
+
 echo "Importing to $DEST..."
 databricks workspace import-dir "$EXTRACTED_DIR" "$DEST" --overwrite --profile "$PROFILE"
 
