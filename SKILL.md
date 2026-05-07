@@ -5,7 +5,7 @@ license: MIT
 compatibility: Designed for Databricks Genie Code Agent mode launched from a notebook with a Python-capable cluster (serverless or classic). Genie Code launched from the catalog browser, a Genie Space, or the SQL editor is backed by a SQL warehouse and CANNOT run this skill's Step 6 Pydantic validator — see "Compute requirements" below. Requires databricks-sdk, pyyaml, pydantic. Run pipeline triggering uses Pipelines Editor native run when available, scripts/run_pipeline.py from notebooks.
 metadata:
   author: Samuel Selvan
-  version: "2.0.7.1"
+  version: "2.0.7.2"
   built_for_session: "2026-04-29 OMOP transform framework hands-on"
 ---
 
@@ -474,11 +474,11 @@ The agent generates the YAML config directly in the conversation. There is no CL
 
 **3. Draft the YAML in working memory — do not pass-through.** Pass-through means emitting `{target: snake_case(col), expr: "src.<Col>"}` for every bronze column without reasoning about whether each column actually maps to its OMOP target. The agent must instead reason about each mapping per [Step 6 — Review, edit, and validate YAML](#step-6--review-edit-and-validate-yaml)'s decision tree (cast type only / lookup vocabulary / join domain table / split or extract / leave NULL). Use `{catalog}` and `{bronze_schema}` placeholders in `sources[].table` — never hardcoded catalog or schema names; the pipeline's `config_loader.py` substitutes them at runtime from Spark conf.
 
-**4. Validate before writing.** Call `validate_yaml_schema.validate_text(yaml_string, target_table=<table>)`. If validation fails, fix the YAML in working memory and re-validate. Do not write a file that fails Pydantic. The validate-then-fix-forward loop is bounded at N=3 attempts, identical to the Update sub-path's loop in [Step 4 — Update workflow](#step-4--update-workflow); on the 4th failure, surface the validation errors and stop.
+**4. Validate before writing.** Call `validate_yaml_schema.validate_text(yaml_string)`. If validation fails, fix the YAML in working memory and re-validate. Do not write a file that fails Pydantic. The validate-then-fix-forward loop is bounded at N=3 attempts, identical to the Update sub-path's loop in [Step 4 — Update workflow](#step-4--update-workflow); on the 4th failure, surface the validation errors and stop.
 
 **5. Write atomically.** Call `config_writer.write_config(project_path, target_table, yaml_string, overwrite=False, expected_mtime=None)`. Generate is the greenfield sub-path: `overwrite=False` raises `FileExistsError` if a `configs/<target_table>.yaml` already exists. If it does, the right move is the [Step 4 — Update workflow](#step-4--update-workflow) sub-path (which passes `overwrite=True` plus a captured `expected_mtime` for the concurrency guard), not blind overwrite. `expected_mtime=None` skips the concurrency guard because there is no prior version to guard against.
 
-**6. Surface the result.** Print `WriteResult.path` (where the file landed), the `git_warning` if any (Decision-10 honest text when the project is not under git), and a one-line summary of mappings the engineer needs to review (any not pure cast-only — vocabulary lookups, joins, CASE expressions, hash surrogate keys). The customer sees what was written and where review attention belongs.
+**6. Surface the result.** Print `WriteResult.config_path` (where the file landed), the `git_warning` if any (Decision-10 honest text when the project is not under git), and a one-line summary of mappings the engineer needs to review (any not pure cast-only — vocabulary lookups, joins, CASE expressions, hash surrogate keys). The customer sees what was written and where review attention belongs.
 
 ### Step 6 — Review, edit, and validate YAML
 
