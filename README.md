@@ -8,14 +8,33 @@ A Databricks Genie Code skill for building OMOP CDM v5.4 pipelines on top of an 
 
 The skill validates 20 OMOP tables and auto-builds 14. The remaining 6 tables (`device_exposure`, `note`, `note_nlp`, `specimen`, `visit_detail`, `dose_era`) are bring-your-own-ETL — the skill validates them against the spec when you populate them, but the build templates focus on the 14-table core that matches a typical from-EHR-bronze pipeline. See `templates/project_scaffold/docs/omop-runbook.md` Section 7.5 for the rationale and BYO-ETL loading patterns.
 
-## Installation
+## Install
 
-Drop the repo contents into your Databricks workspace under `.assistant/skills/omop-pipeline-builder/`. Genie Code Agent will discover the skill on next launch.
+### Quick install (recommended)
+
+Pre-req: Databricks CLI installed and authenticated (https://docs.databricks.com/en/dev-tools/cli/install.html).
 
 ```bash
-cd /Workspace/.assistant/skills
-git clone https://github.com/saselvan/genie-code-omop.git omop-pipeline-builder
+curl -sSL https://raw.githubusercontent.com/saselvan/genie-code-omop/main/install.sh -o install.sh
+chmod +x install.sh
+./install.sh <your-profile-name>
 ```
+
+The script downloads the latest skill from GitHub and imports it to `/Workspace/Users/<your-username>/.assistant/skills/omop-pipeline-builder/`. Run it again anytime to update to the latest version.
+
+After install, restart Genie Code Agent (close and reopen the panel) to discover the skill.
+
+### Alternative — manual install (no CLI required)
+
+1. Visit https://github.com/saselvan/genie-code-omop, click the green "Code" button → "Download ZIP", unzip locally.
+2. In Databricks workspace UI: navigate to **Workspace → Users → <your-username>**.
+3. Create nested folders: `.assistant` → `skills` → `omop-pipeline-builder`.
+4. Inside that folder, click the ⋮ menu → **Import** → drag the unzipped repo's contents into the import dialog.
+5. Restart Genie Code Agent to discover the skill.
+
+### Workspace-level install (admin only)
+
+For shared installation across all workspace users, replace `/Workspace/Users/<your-username>/.assistant/skills/` with `/Workspace/.assistant/skills/` in the install script's path. Requires workspace admin permissions.
 
 **Requirements:** Databricks workspace with Unity Catalog; notebook with a Python-capable cluster (the skill cannot run on a SQL warehouse — Step 6 uses Pydantic); Python 3.11+ with `databricks-sdk`, `pyyaml`, `pydantic`; read access to an OHDSI vocabulary `concept` table in UC; bronze-layer source tables already landed in UC. See `SKILL.md` "Compute requirements" for the full launch-surface compatibility matrix.
 
